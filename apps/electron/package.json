@@ -1,0 +1,23 @@
+{
+  "name": "@graph-client/electron",
+  "version": "1.0.0",
+  "description": "Electron main process — window management, IPC handlers, service bridges",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "compile": "tsc",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@graph-client/core": "*",
+    "@graph-client/shared": "*",
+    "@aws-sdk/client-dynamodb": "*",
+    "@aws-sdk/lib-dynamodb": "*"
+  },
+  "devDependencies": {
+    "@types/node": "*",
+    "electron": "*",
+    "typescript": "*"
+  }
+}

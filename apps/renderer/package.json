@@ -1,0 +1,21 @@
+{
+  "name": "@graph-client/renderer",
+  "version": "1.0.0",
+  "description": "React renderer — UI components, canvas visualizations, IPC client wrappers",
+  "scripts": {
+    "build": "node ../../esbuild.config.mjs",
+    "dev": "node ../../esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@graph-client/shared": "*",
+    "react": "*",
+    "react-dom": "*"
+  },
+  "devDependencies": {
+    "@types/react": "*",
+    "@types/react-dom": "*",
+    "esbuild": "*",
+    "typescript": "*"
+  }
+}

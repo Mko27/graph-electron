@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "outDir": "dist",
+    "allowJs": true,
+    "paths": {
+      "@graph-client/shared": ["../../packages/shared/src"],
+      "@graph-client/shared/*": ["../../packages/shared/src/*"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "../../packages/shared/src/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

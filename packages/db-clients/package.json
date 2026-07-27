@@ -1,0 +1,31 @@
+{
+  "name": "@graph-client/db-clients",
+  "version": "1.0.0",
+  "description": "Thin transport-only wrappers over graph database npm drivers",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "*",
+    "@aws-sdk/credential-provider-node": "*",
+    "@smithy/protocol-http": "*",
+    "@smithy/signature-v4": "*",
+    "gremlin": "*"
+  },
+  "peerDependencies": {
+    "neo4j-driver": ">=5.0.0",
+    "arangojs": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "neo4j-driver": { "optional": true },
+    "arangojs": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/node": "*",
+    "typescript": "*"
+  }
+}

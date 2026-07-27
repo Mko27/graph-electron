@@ -1,6 +1,9 @@
 node_modules/
-dist/
 build/
 *.log
 .DS_Store
 
+# Compiled output
+apps/*/dist/
+packages/*/dist/
+dist/

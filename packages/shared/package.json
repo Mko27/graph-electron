@@ -1,0 +1,15 @@
+{
+  "name": "@graph-client/shared",
+  "version": "1.0.0",
+  "description": "Shared IPC contracts, DTOs, and types used by both main process and renderer",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "*"
+  }
+}

@@ -1,51 +1,66 @@
 {
-  "name": "neptune-graph-client",
-  "version": "1.0.0",
-  "description": "Desktop graph database client for Amazon Neptune using Gremlin queries",
-  "main": "main.js",
+  "name": "graph-client-monorepo",
+  "version": "2.0.1",
+  "private": true,
+  "description": "Multi-provider graph database client — Neptune, Neo4j, JanusGraph, ArangoDB, and more",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "start": "electron .",
-    "build": "electron-builder",
-    "build:mac": "electron-builder --mac",
-    "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux"
-  },
-  "build": {
-    "appId": "com.neptune.graph-client",
-    "productName": "Neptune Graph Client",
-    "files": [
-      "main.js",
-      "preload.js",
-      "src/**/*",
-      "assets/**/*"
-    ],
-    "mac": {
-      "target": "dmg",
-      "icon": "assets/icon.png"
-    },
-    "win": {
-      "target": "nsis",
-      "icon": "assets/icon.png"
-    },
-    "linux": {
-      "target": "AppImage",
-      "icon": "assets/icon.png"
-    }
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p apps/electron/tsconfig.json && tsc --noEmit -p apps/renderer/tsconfig.json",
+    "compile": "npm run build -w packages/shared && npm run build -w packages/core && npm run compile -w apps/electron",
+    "compile:electron": "tsc -p apps/electron/tsconfig.json",
+    "start": "npm run compile && npm run bundle && electron apps/electron/dist/main.js",
+    "bundle": "node esbuild.config.mjs",
+    "bundle:watch": "node esbuild.config.mjs --watch",
+    "dev": "concurrently \"npm run bundle:watch\" \"npm run compile:electron -- --watch\"",
+    "build": "npm run compile && npm run bundle && electron-builder --config electron-builder.config.cjs",
+    "build:mac": "npm run compile && npm run bundle && electron-builder --mac --config electron-builder.config.cjs",
+    "build:mac:local": "npm run compile && npm run bundle && electron-builder --mac --config electron-builder.config.cjs",
+    "build:win": "npm run compile && npm run bundle && electron-builder --win --config electron-builder.config.cjs",
+    "build:linux": "npm run compile && npm run bundle && electron-builder --linux --config electron-builder.config.cjs"
   },
   "keywords": [
     "neptune",
+    "neo4j",
     "gremlin",
+    "cypher",
     "graph-database",
-    "electron"
+    "electron",
+    "react"
   ],
   "author": "",
   "license": "MIT",
+  "main": "apps/electron/dist/main.js",
   "devDependencies": {
+    "@types/node": "^20.19.41",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "concurrently": "^8.2.2",
     "electron": "^28.1.0",
-    "electron-builder": "^24.9.1"
+    "electron-builder": "^24.9.1",
+    "esbuild": "^0.20.0",
+    "playwright-core": "^1.60.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.7"
   },
   "dependencies": {
-    "gremlin": "^3.7.1"
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@aws-sdk/client-dynamodb": "^3.990.0",
+    "@aws-sdk/credential-provider-node": "^3.972.9",
+    "@aws-sdk/lib-dynamodb": "^3.990.0",
+    "@smithy/protocol-http": "^5.3.8",
+    "@smithy/signature-v4": "^5.3.8",
+    "arangojs": "^8.0.0",
+    "gremlin": "^3.7.1",
+    "neo4j-driver": "^5.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "optionalDependencies": {
+    "nebula-javascript": "^3.0.0"
   }
 }
-

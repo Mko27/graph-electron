@@ -1,0 +1,31 @@
+{
+  "name": "@graph-client/core",
+  "version": "1.0.0",
+  "description": "Graph database provider system, query engine, and core business logic",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "*",
+    "@aws-sdk/credential-provider-node": "*",
+    "@smithy/protocol-http": "*",
+    "@smithy/signature-v4": "*",
+    "gremlin": "*"
+  },
+  "peerDependencies": {
+    "neo4j-driver": ">=5.0.0",
+    "arangojs": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "neo4j-driver": { "optional": true },
+    "arangojs": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/node": "*",
+    "typescript": "*"
+  }
+}
