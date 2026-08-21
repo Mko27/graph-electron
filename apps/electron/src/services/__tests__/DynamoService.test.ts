@@ -111,3 +111,40 @@ describe('DynamoService.fetchItem', () => {
     await expect(svc.fetchItem('z')).rejects.toThrow('Timeout');
   });
 });
+
+describe('DynamoService environments', () => {
+  it('records the environment id alongside the resolved table', () => {
+    const svc = makeService();
+    const result = svc.configure({ environment: 'plive', tableName: 'plive_blocks', endpoint: '' });
+    expect(result.environment).toBe('plive');
+    expect(result.tableName).toBe('plive_blocks');
+    expect(result.endpoint).toBe('');
+  });
+
+  it('keeps each environment switch independent', () => {
+    const svc = makeService();
+    svc.configure({ environment: 'stage', tableName: 'stage_blocks', region: 'eu-west-1', endpoint: '' });
+    const back = svc.configure({
+      environment: 'local',
+      tableName: 'development_blocks',
+      region: 'us-east-1',
+      endpoint: 'http://localhost:8000',
+    });
+    expect(back.environment).toBe('local');
+    expect(back.tableName).toBe('development_blocks');
+    expect(back.region).toBe('us-east-1');
+    expect(back.endpoint).toBe('http://localhost:8000');
+  });
+
+  it('carries an AWS profile through and can clear it again', () => {
+    const svc = makeService();
+    expect(svc.configure({ profile: 'krisp-plive' }).profile).toBe('krisp-plive');
+    expect(svc.configure({ profile: '' }).profile).toBe('');
+  });
+
+  it('defaults to the local environment before any configure call', () => {
+    const cfg = makeService().getConfig();
+    expect(cfg.environment).toBe('local');
+    expect(cfg.profile).toBe('');
+  });
+});

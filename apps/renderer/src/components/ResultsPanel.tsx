@@ -2,11 +2,13 @@
  * ResultsPanel — tabbed results view (Table / JSON / Graph) for the active query tab.
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useApp } from '../state/AppContext';
 import { CanvasTable } from '../canvas/CanvasTable.js';
 import { CanvasJson } from '../canvas/CanvasJson.js';
 import { CanvasGraph } from '../canvas/CanvasGraph.js';
+import { LABEL_MODE_AUTO, LABEL_MODE_LABEL, LABEL_MODE_ID } from '../utils/helpers.js';
+import { copyText } from '../utils/clipboard';
 import { DynamoModal } from './DynamoModal';
 
 const RESULT_TABS = [
@@ -40,6 +42,9 @@ const RESULT_TABS = [
     ),
   },
 ];
+
+/** Label modes that are not property keys. */
+const LABEL_SENTINELS: string[] = [LABEL_MODE_AUTO, LABEL_MODE_LABEL, LABEL_MODE_ID];
 
 // ── Canvas view wrappers ──────────────────────────────────────────────────────
 
@@ -77,15 +82,22 @@ function GraphView({ data }: { data: unknown[] }) {
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<InstanceType<typeof CanvasGraph> | null>(null);
 
+  const { graphLabelProperty, setGraphLabelProperty } = useApp();
   const [dynamoModal, setDynamoModal] = useState<{ id: string; item: Record<string, unknown> } | null>(null);
   const [pinnedItem, setPinnedItem]   = useState<Record<string, unknown> | null>(null);
   const [graphError, setGraphError]   = useState<string | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [propertyKeys, setPropertyKeys] = useState<string[]>([]);
+
+  // The renderer is created once; the saved label choice seeds it so the first
+  // paint already uses the right property, and the effect below keeps it in sync.
+  const initialLabelProperty = useRef(graphLabelProperty);
 
   useEffect(() => {
     if (!canvasRef.current) return;
     rendererRef.current = new CanvasGraph(canvasRef.current, {
       onShowDynamoModal: (id: string, item: unknown) => setDynamoModal({ id, item: item as Record<string, unknown> }),
+      labelProperty: initialLabelProperty.current,
     });
     return () => { rendererRef.current?.destroy(); rendererRef.current = null; };
   }, []);
@@ -95,9 +107,18 @@ function GraphView({ data }: { data: unknown[] }) {
     setGraphLoading(true);
     setGraphError(null);
     rendererRef.current.setData(data)
-      .then(() => { setPinnedItem(null); setGraphLoading(false); })
+      .then(() => {
+        setPinnedItem(null);
+        setPropertyKeys(rendererRef.current?.getPropertyKeys() ?? []);
+        setGraphLoading(false);
+      })
       .catch((err: Error) => { setGraphError(err.message || 'Failed to render graph'); setGraphLoading(false); });
   }, [data]);
+
+  // Relabel in place — node positions are preserved.
+  useEffect(() => {
+    rendererRef.current?.setLabelProperty(graphLabelProperty);
+  }, [graphLabelProperty]);
 
   useEffect(() => {
     if (!rendererRef.current) return;
@@ -119,6 +140,29 @@ function GraphView({ data }: { data: unknown[] }) {
   return (
     <div className="canvas-view-container graph-view">
       <div className="graph-controls">
+        <label className="graph-label-picker" title="Choose which property is shown inside each node">
+          <span>Label</span>
+          <select
+            value={graphLabelProperty}
+            onChange={e => setGraphLabelProperty(e.target.value)}
+          >
+            <option value={LABEL_MODE_AUTO}>Auto</option>
+            <option value={LABEL_MODE_LABEL}>Vertex label</option>
+            <option value={LABEL_MODE_ID}>ID</option>
+            {propertyKeys.length > 0 && (
+              <optgroup label="Properties">
+                {propertyKeys.map(key => (
+                  <option key={key} value={key}>{key}</option>
+                ))}
+              </optgroup>
+            )}
+            {/* A property saved from an earlier result set may not exist in this
+                one — keep it selectable so the choice is not silently reset. */}
+            {!LABEL_SENTINELS.includes(graphLabelProperty) && !propertyKeys.includes(graphLabelProperty) && (
+              <option value={graphLabelProperty}>{graphLabelProperty} (not in these results)</option>
+            )}
+          </select>
+        </label>
         <button className="btn-icon" title="Fit to screen" onClick={() => rendererRef.current?.autoFit()}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
@@ -217,6 +261,46 @@ function DetailPanel({ item, onClose, onFetchDynamo }: {
   );
 }
 
+// ── Error banner ──────────────────────────────────────────────────────────────
+
+/**
+ * Query errors were previously replaced by the results as soon as any older
+ * data was present, and the text was neither selectable nor copyable. This
+ * banner stays put until the next successful run, wraps the full message, and
+ * offers a copy button.
+ */
+function ResultError({ message, connectionName, onRetry }: {
+  message: string;
+  connectionName?: string;
+  onRetry?: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const onCopy = useCallback(async () => {
+    if (await copyText(message)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1_500);
+    }
+  }, [message]);
+
+  return (
+    <div className="error-message" role="alert">
+      <div className="error-message-head">
+        <strong>✕ Query failed{connectionName ? ` on ${connectionName}` : ''}</strong>
+        <div className="error-message-actions">
+          {onRetry && (
+            <button className="btn-sm btn-primary-sm" onClick={onRetry}>Reconnect</button>
+          )}
+          <button className="toast-link-btn" onClick={() => { void onCopy(); }}>
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      </div>
+      <pre className="error-message-text">{message}</pre>
+    </div>
+  );
+}
+
 // ── Empty state ───────────────────────────────────────────────────────────────
 
 function EmptyState() {
@@ -238,13 +322,16 @@ function EmptyState() {
 // ── ResultsPanel (main export) ────────────────────────────────────────────────
 
 export function ResultsPanel() {
-  const { activeTab, setTabResultView, activeTabId } = useApp();
+  const { activeTab, setTabResultView, activeTabId, activeTabConnection, reconnectConnection } = useApp();
 
   const result     = activeTab?.result ?? null;
   const error      = activeTab?.error ?? null;
   const activeView = activeTab?.activeResultTab ?? 'table';
   const data       = result?.data;
   const hasData    = data && data.length > 0;
+
+  // Offer a reconnect only when the connection itself is the problem.
+  const connectionDown = activeTabConnection != null && activeTabConnection.state !== 'connected';
 
   return (
     <div id="resultsPanel">
@@ -267,10 +354,19 @@ export function ResultsPanel() {
       </div>
 
       <div className="tab-content active">
-        {error && !hasData ? (
-          <div className="error-message">❌ {error}</div>
-        ) : !hasData ? (
-          <EmptyState />
+        {error && (
+          <ResultError
+            message={error}
+            connectionName={activeTabConnection?.name}
+            onRetry={
+              connectionDown && activeTabConnection
+                ? () => { void reconnectConnection(activeTabConnection.id); }
+                : undefined
+            }
+          />
+        )}
+        {!hasData ? (
+          error ? null : <EmptyState />
         ) : (
           <>
             {activeView === 'table' && <TableView data={data} />}

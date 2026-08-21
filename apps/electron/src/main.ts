@@ -2,6 +2,8 @@ import { app, BrowserWindow } from 'electron';
 import * as path from 'path';
 import { ConnectionManager } from '@graph-client/core';
 import { DynamoService } from './services/DynamoService';
+import { WorkspaceStore } from './services/WorkspaceStore';
+import { AwsProfileService } from './services/AwsProfileService';
 import { registerAllHandlers } from './ipc/registry';
 import { createMainWindow } from './windows/mainWindow';
 
@@ -25,6 +27,10 @@ function log(level: string, ...args: unknown[]): void {
 
 const connectionManager = new ConnectionManager(log);
 const dynamoService = new DynamoService(log);
+const awsProfileService = new AwsProfileService(log);
+// Constructed lazily in whenReady() — app.getPath('userData') is only valid
+// once the app is ready.
+let workspaceStore: WorkspaceStore;
 
 function createWindow(): void {
   mainWindow = createMainWindow({
@@ -41,7 +47,9 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  registerAllHandlers({ connectionManager, dynamoService, log });
+  workspaceStore = new WorkspaceStore(log);
+  log('info', `Workspace state file: ${workspaceStore.getPath()}`);
+  registerAllHandlers({ connectionManager, dynamoService, workspaceStore, awsProfileService, log });
   createWindow();
 });
 

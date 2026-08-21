@@ -17,9 +17,11 @@ import {
   DIALECT_LABELS,
   DIALECT_COMPATIBILITY,
   DEFAULT_PORTS,
+  DYNAMO_ENVIRONMENT_ORDER,
 } from '@graph-client/shared';
 import type { ProviderConnectionDto } from '@graph-client/shared';
 import type { ConnectionObject } from '../state/AppContext';
+import { AwsProfileSelect } from './AwsProfileSelect';
 
 // ── Quick query templates by dialect ─────────────────────────────────────────
 
@@ -82,6 +84,30 @@ function DbSpecificFields({
     setForm({ ...form, [k]: e.target.value });
 
   switch (dbType) {
+    case 'neptune':
+      return (
+        <>
+          <div className="form-group">
+            <label>AWS Region (optional)</label>
+            <input type="text" placeholder="us-east-1" value={String(form.region ?? '')} onChange={set('region')} />
+          </div>
+          <div className="form-group checkbox-group">
+            <label>
+              <input
+                type="checkbox"
+                checked={form.useIamAuth !== false}
+                onChange={e => setForm({ ...form, useIamAuth: e.target.checked })}
+              />
+              <span>Use IAM Auth (SigV4)</span>
+            </label>
+          </div>
+          <AwsProfileSelect
+            value={String(form.profile ?? '')}
+            onChange={profile => setForm({ ...form, profile })}
+          />
+        </>
+      );
+
     case 'neo4j':
     case 'orientdb':
     case 'nebula':
@@ -263,12 +289,13 @@ function AddConnectionForm({ onAdd, onCancel }: { onAdd: (dto: ProviderConnectio
 // ── Connection Card ───────────────────────────────────────────────────────────
 
 function ConnectionCard({
-  conn, isActive, onSelect, onConnect, onDisconnect, onRemove,
+  conn, isActive, onSelect, onConnect, onReconnect, onDisconnect, onRemove,
 }: {
   conn: ConnectionObject;
   isActive: boolean;
   onSelect: () => void;
   onConnect: () => void;
+  onReconnect: () => void;
   onDisconnect: () => void;
   onRemove: () => void;
 }) {
@@ -281,6 +308,18 @@ function ConnectionCard({
       <div className="conn-card-header">
         <span className={`conn-dot ${conn.state}`} />
         <span className="conn-name">{conn.name}</span>
+        {!isConnecting && (
+          <button
+            className="btn-icon conn-reconnect-btn"
+            title={isConnected ? 'Reconnect (drop and re-open this connection)' : 'Retry connection'}
+            onClick={e => { e.stopPropagation(); onReconnect(); }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <polyline points="23 4 23 10 17 10"/>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+          </button>
+        )}
         <button
           className="btn-icon conn-remove-btn"
           title="Remove connection"
@@ -293,9 +332,11 @@ function ConnectionCard({
       </div>
       <div className="conn-endpoint">{conn.host}:{conn.port} — {DB_TYPE_LABELS[conn.dbType] ?? conn.dbType}</div>
       <div className="conn-card-footer">
-        <span className={`conn-state-text ${conn.state}`}>{conn.statusText}</span>
+        <span className={`conn-state-text ${conn.state}`} title={conn.statusText}>{conn.statusText}</span>
         {!isConnected && !isConnecting ? (
-          <button className="btn-sm btn-primary-sm" onClick={e => { e.stopPropagation(); onConnect(); }}>Connect</button>
+          <button className="btn-sm btn-primary-sm" onClick={e => { e.stopPropagation(); onConnect(); }}>
+            {isError ? 'Retry' : 'Connect'}
+          </button>
         ) : isConnected ? (
           <button className="btn-sm btn-danger-sm" onClick={e => { e.stopPropagation(); onDisconnect(); }}>Disconnect</button>
         ) : (
@@ -304,7 +345,7 @@ function ConnectionCard({
           </span>
         )}
       </div>
-      {isError && <div className="conn-error-text">{conn.statusText}</div>}
+      {isError && <div className="conn-error-text" title={conn.statusText}>{conn.statusText}</div>}
     </div>
   );
 }
@@ -312,7 +353,7 @@ function ConnectionCard({
 function ConnectionsPanel() {
   const {
     connections, activeConnectionId, setActiveConnectionId,
-    addConnection, connectConnection, disconnectConnection, removeConnection,
+    addConnection, connectConnection, reconnectConnection, disconnectConnection, removeConnection,
   } = useApp();
 
   const [showForm, setShowForm] = useState(false);
@@ -353,6 +394,7 @@ function ConnectionsPanel() {
             isActive={conn.id === activeConnectionId}
             onSelect={() => setActiveConnectionId(conn.id)}
             onConnect={() => connectConnection(conn.id)}
+            onReconnect={() => reconnectConnection(conn.id)}
             onDisconnect={() => disconnectConnection(conn.id)}
             onRemove={() => removeConnection(conn.id)}
           />
@@ -362,26 +404,43 @@ function ConnectionsPanel() {
   );
 }
 
-// ── DynamoDB Config ───────────────────────────────────────────────────────────
+// ── DynamoDB Environment ──────────────────────────────────────────────────────
 
+/**
+ * Each environment (local / stage / plive) carries its own table, region,
+ * endpoint and AWS profile. Switching the selector re-points enrichment lookups
+ * at that environment immediately; the fields below edit the selected
+ * environment and are persisted with the workspace.
+ */
 function DynamoConfig() {
-  const { handleDynamoConfig } = useApp();
-  const [region, setRegion]     = useState('us-east-1');
-  const [tableName, setTableName] = useState('blocks');
-  const [host, setHost]         = useState('http://localhost:8000');
-  const [configured, setConfigured] = useState(false);
-  const [configText, setConfigText] = useState('');
+  const { dynamo, setDynamoEnvironment, updateDynamoEnvironment, applyDynamoConfig } = useApp();
+
+  const envIds = [
+    ...DYNAMO_ENVIRONMENT_ORDER.filter(id => dynamo.environments[id]),
+    ...Object.keys(dynamo.environments).filter(
+      id => !(DYNAMO_ENVIRONMENT_ORDER as readonly string[]).includes(id),
+    ),
+  ];
+  const activeId = dynamo.environment;
+  const env = dynamo.environments[activeId];
+  const [busy, setBusy] = useState(false);
+
+  if (!env) return null;
+
+  const set = (field: 'region' | 'tableName' | 'endpoint' | 'profile') =>
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      updateDynamoEnvironment(activeId, { [field]: e.target.value });
+
+  const onSwitch = async (nextId: string) => {
+    setBusy(true);
+    await setDynamoEnvironment(nextId);
+    setBusy(false);
+  };
 
   const onApply = async () => {
-    const result = await handleDynamoConfig(
-      region.trim() || 'us-east-1',
-      tableName.trim() || 'blocks',
-      host.trim() || undefined,
-    );
-    if (result?.success) {
-      setConfigured(true);
-      setConfigText(`${result.tableName} (${result.region})`);
-    }
+    setBusy(true);
+    await applyDynamoConfig();
+    setBusy(false);
   };
 
   return (
@@ -393,32 +452,54 @@ function DynamoConfig() {
           <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
         </svg>
         DynamoDB Source
+        <span className={`section-badge env-badge env-${activeId}`}>{env.label}</span>
       </div>
       <div className="connection-form">
         <div className="form-group">
-          <label>Host</label>
-          <input type="text" placeholder="http://localhost:8000" value={host} onChange={e => setHost(e.target.value)} />
-        </div>
-        <div className="form-group">
-          <label>AWS Region</label>
-          <input type="text" placeholder="us-east-1" value={region} onChange={e => setRegion(e.target.value)} />
+          <label>Environment</label>
+          <select
+            className="conn-select"
+            style={{ width: '100%' }}
+            value={activeId}
+            disabled={busy}
+            onChange={e => { void onSwitch(e.target.value); }}
+            title="Each environment points at its own DynamoDB table"
+          >
+            {envIds.map(id => (
+              <option key={id} value={id}>{dynamo.environments[id].label}</option>
+            ))}
+          </select>
         </div>
         <div className="form-group">
           <label>Table Name</label>
-          <input type="text" placeholder="blocks" value={tableName} onChange={e => setTableName(e.target.value)} />
+          <input type="text" placeholder="blocks" value={env.tableName} onChange={set('tableName')} />
         </div>
-        <button className="btn btn-ghost" style={{ width: '100%' }} onClick={onApply}>
+        <div className="form-group">
+          <label>AWS Region</label>
+          <input type="text" placeholder="us-east-1" value={env.region} onChange={set('region')} />
+        </div>
+        <div className="form-group">
+          <label>Endpoint <span className="form-hint">(blank = real AWS)</span></label>
+          <input type="text" placeholder="http://localhost:8000" value={env.endpoint} onChange={set('endpoint')} />
+        </div>
+        <AwsProfileSelect
+          value={env.profile ?? ''}
+          onChange={profile => updateDynamoEnvironment(activeId, { profile })}
+        />
+        <button className="btn btn-ghost" style={{ width: '100%' }} onClick={() => { void onApply(); }} disabled={busy}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
           </svg>
-          Apply Config
+          {busy ? 'Applying…' : 'Apply Config'}
         </button>
-        {configured && (
-          <div className="dynamo-config-status" style={{ display: 'flex' }}>
-            <span className="dynamo-dot" />
-            <span>{configText}</span>
-          </div>
-        )}
+        <div
+          className={`dynamo-config-status ${dynamo.applied ? 'applied' : 'pending'}`}
+          style={{ display: 'flex' }}
+          title={dynamo.statusText}
+        >
+          <span className="dynamo-dot" />
+          <span>{dynamo.statusText}</span>
+        </div>
       </div>
     </div>
   );

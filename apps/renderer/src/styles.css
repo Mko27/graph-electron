@@ -1752,3 +1752,412 @@ kbd {
 .status-conn-dot.disconnected { background: var(--text-muted); }
 .status-conn-dot.error        { background: var(--danger); }
 
+
+/* ===================================================================== */
+/* Windows title bar                                                     */
+/* ===================================================================== */
+/* On Windows the native caption bar is hidden and replaced by a
+   titleBarOverlay painted in --bg-secondary (see mainWindow.ts). This strip
+   fills that band, supplies the drag region, and keeps the caption buttons
+   clear of the tab bar. */
+#appShell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#appShell #app {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+#titleBar {
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  /* Leave room for the minimise / maximise / close overlay buttons. */
+  padding-right: 140px;
+}
+
+.titlebar-drag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  width: 100%;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  /* The drag region the hidden caption bar used to provide. */
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.titlebar-drag svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* Interactive elements must opt out of the drag region. */
+#titleBar button,
+#titleBar select,
+#titleBar input {
+  -webkit-app-region: no-drag;
+}
+
+/* ===================================================================== */
+/* Toasts — error / warning visibility                                    */
+/* ===================================================================== */
+.toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 44px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  pointer-events: none;
+}
+
+.toast-stack > * {
+  pointer-events: auto;
+}
+
+.toast-clear-all {
+  align-self: flex-end;
+  padding: 3px 10px;
+  font-size: 10px;
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.toast-clear-all:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.toast {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  animation: toast-in 0.18s ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.toast-error   { border-left-color: var(--danger); }
+.toast-warning { border-left-color: var(--warning); }
+.toast-info    { border-left-color: var(--accent); }
+.toast-success { border-left-color: var(--success); }
+
+.toast-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 1px;
+}
+
+.toast-icon-error   { background: var(--danger-dim);  color: var(--danger); }
+.toast-icon-warning { background: var(--warning-dim); color: var(--warning); }
+.toast-icon-info    { background: var(--accent-dim);  color: var(--accent); }
+.toast-icon-success { background: var(--success-dim); color: var(--success); }
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.toast-detail {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Collapsed by default; the full text is one click away and always
+     selectable so it can be copied into a ticket. */
+  max-height: 66px;
+  overflow: hidden;
+  user-select: text;
+}
+
+.toast-detail.expanded {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.toast-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.toast-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.toast-link-btn:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.toast-time {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.toast-close {
+  flex-shrink: 0;
+  align-self: flex-start;
+  background: none;
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.toast-close:hover { color: var(--text-primary); }
+
+/* ===================================================================== */
+/* Query error banner                                                    */
+/* ===================================================================== */
+/* Overrides the single-line .error-message above: full text, wrapped and
+   selectable, and it no longer disappears when stale results are present. */
+.error-message {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.error-message-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.error-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.error-message-text {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+  user-select: text;
+}
+
+/* ===================================================================== */
+/* Graph node-label picker                                               */
+/* ===================================================================== */
+.graph-controls {
+  /* The label picker is wider than the fixed-size icon buttons; keep those
+     flush with its right edge instead of drifting left. */
+  align-items: flex-end;
+}
+
+.graph-label-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 2px;
+}
+
+.graph-label-picker > span {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.graph-label-picker select {
+  width: 150px;
+  padding: 4px 6px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.graph-label-picker select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ===================================================================== */
+/* DynamoDB environment selector                                         */
+/* ===================================================================== */
+.form-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+.env-badge {
+  max-width: none;
+}
+
+/* Production-ish environments read warm so they are hard to mistake for local. */
+.env-badge.env-stage { background: var(--warning-dim); color: var(--warning); }
+.env-badge.env-plive { background: var(--danger-dim);  color: var(--danger); }
+.env-badge.env-local { background: var(--success-dim); color: var(--success); }
+
+.dynamo-config-status.pending { color: var(--warning); }
+.dynamo-config-status.pending .dynamo-dot { background: var(--warning); }
+.dynamo-config-status.applied .dynamo-dot { background: var(--success); }
+
+.dynamo-config-status span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===================================================================== */
+/* Status bar                                                            */
+/* ===================================================================== */
+.status-text,
+.status-text-error {
+  display: block;
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-text       { color: var(--text-muted); }
+.status-text-error { color: var(--danger); font-weight: 500; }
+
+.status-env {
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-env.env-stage { background: var(--warning-dim); color: var(--warning); }
+.status-env.env-plive { background: var(--danger-dim);  color: var(--danger); }
+.status-env.env-local { background: var(--success-dim); color: var(--success); }
+/* A config the main process has not accepted yet must not look authoritative. */
+.status-env.pending { opacity: 0.55; }
+
+/* ===================================================================== */
+/* Connection card — reconnect control                                   */
+/* ===================================================================== */
+.conn-reconnect-btn {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.conn-reconnect-btn:hover {
+  color: var(--accent);
+}
+
+/* Full error text on the card, rather than a single clipped line. */
+.conn-error-text {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.45;
+  max-height: 54px;
+  overflow-y: auto;
+}
+
+/* ===================================================================== */
+/* AWS profile picker                                                    */
+/* ===================================================================== */
+.aws-profile-refresh {
+  margin-left: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.aws-profile-refresh:hover { color: var(--accent); }
+
+.aws-profile-custom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aws-profile-custom input { flex: 1; min-width: 0; }
+
+.aws-profile-note {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.aws-profile-note.error { color: var(--danger); }

@@ -19,7 +19,8 @@ import {
   isNeptuneEdge,
   isNeptuneVertex,
   escapeHtml,
-  getDisplayLabel,
+  computeNodeLabel,
+  LABEL_MODE_AUTO,
 } from '../utils/helpers.js';
 
 /** Maximum nodes before sampling */
@@ -36,11 +37,18 @@ export class CanvasGraph {
    * @param {HTMLCanvasElement} canvas
    * @param {object} options
    * @param {Function} [options.onShowDynamoModal] - callback(id, graphItem)
+   * @param {string} [options.labelProperty] - property key (or LABEL_MODE_* sentinel) to draw in nodes
    */
   constructor(canvas, options = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.onShowDynamoModal = options.onShowDynamoModal || null;
+
+    // Which property to draw inside each node — LABEL_MODE_AUTO picks a
+    // sensible one per node; anything else is a literal property key.
+    this._labelProperty = options.labelProperty || LABEL_MODE_AUTO;
+    // Union of property keys seen across all nodes, for the label selector.
+    this._propertyKeys = new Set();
 
     // Layout state
     this._width = 0;
@@ -101,6 +109,7 @@ export class CanvasGraph {
       this._nodeArray = [];
       this._nodeMap.clear();
       this._edgesList = [];
+      this._propertyKeys.clear();
       this._dirty = true;
       return;
     }
@@ -127,6 +136,7 @@ export class CanvasGraph {
       this._nodeArray = [];
       this._nodeMap.clear();
       this._edgesList = [];
+      this._propertyKeys.clear();
       this._dataWarning = `Error processing data: ${err.message}`;
       this._dirty = true;
     }
@@ -157,6 +167,40 @@ export class CanvasGraph {
    */
   getWarning() {
     return this._dataWarning;
+  }
+
+  /**
+   * Property keys present on the loaded nodes, sorted — used to populate the
+   * "label nodes by" selector.
+   * @returns {string[]}
+   */
+  getPropertyKeys() {
+    return [...this._propertyKeys].sort((a, b) => a.localeCompare(b));
+  }
+
+  /** Currently selected label property (or LABEL_MODE_* sentinel). */
+  getLabelProperty() {
+    return this._labelProperty;
+  }
+
+  /**
+   * Change which property is drawn inside the nodes. Relabels in place — no
+   * re-layout, so node positions are preserved.
+   * @param {string} property
+   */
+  setLabelProperty(property) {
+    const next = property || LABEL_MODE_AUTO;
+    if (next === this._labelProperty) return;
+    this._labelProperty = next;
+    this._relabelNodes();
+  }
+
+  /** Recompute every node's drawn label from the current label property. */
+  _relabelNodes() {
+    for (const node of this._nodeArray) {
+      node.label = computeNodeLabel(node.fullLabel, node.properties, node.id, this._labelProperty);
+    }
+    this._dirty = true;
   }
 
   autoFit() {
@@ -192,11 +236,13 @@ export class CanvasGraph {
     this._nodeArray = [];
     this._nodeMap.clear();
     this._edgesList = [];
+    this._propertyKeys.clear();
   }
 
   // ===== Graph Data Extraction =====
 
   _extractGraphData(data) {
+    this._propertyKeys = new Set();
     const nodes = new Map();
     const edges = [];
     const labelColors = {};
@@ -236,16 +282,20 @@ export class CanvasGraph {
         if (hasMoreProps || upgradingLabel) {
           if (hasMoreProps) Object.assign(existing.properties, propsMap);
           if (label != null) existing.fullLabel = label;
-          existing.label = getDisplayLabel(existing.fullLabel, existing.properties, nodeId);
+          existing.label = computeNodeLabel(
+            existing.fullLabel, existing.properties, nodeId, this._labelProperty,
+          );
           existing.color = getColorForLabel(existing.fullLabel);
+          for (const key of Object.keys(existing.properties)) this._propertyKeys.add(key);
         }
         return;
       }
 
       const effectiveLabel = label ?? 'item';
+      for (const key of Object.keys(propsMap)) this._propertyKeys.add(key);
       nodes.set(nodeId, {
         id: nodeId,
-        label: getDisplayLabel(effectiveLabel, propsMap, nodeId),
+        label: computeNodeLabel(effectiveLabel, propsMap, nodeId, this._labelProperty),
         fullLabel: effectiveLabel,
         color: getColorForLabel(effectiveLabel),
         properties: propsMap,
@@ -371,7 +421,9 @@ export class CanvasGraph {
         // Edge properties: handle both object format and flattened format
         const edgeMeta = new Set(['id', 'label', 'type', 'outV', 'inV', 'outVLabel', 'inVLabel']);
         let edgeProps = {};
-        if (item.properties && typeof item.properties === 'object') {
+        if (Array.isArray(item.properties)) {
+          edgeProps = neptunePropsToMap(item.properties);
+        } else if (item.properties && typeof item.properties === 'object') {
           edgeProps = unwrapPropsObject(item.properties);
         } else {
           for (const [k, v] of Object.entries(item)) {

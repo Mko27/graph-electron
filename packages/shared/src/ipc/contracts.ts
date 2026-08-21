@@ -183,4 +183,91 @@ export interface ProviderConnectionDto {
   // Extra
   traversalSource?: string;
   region?: string;
+  profile?: string;
+}
+
+// ── dynamo-configure ─────────────────────────────────────────────────────────
+
+export interface DynamoConfigureRequest {
+  region?: string;
+  tableName?: string;
+  endpoint?: string;
+  /** Named AWS profile (incl. SSO) used to resolve credentials. */
+  profile?: string;
+  /** Environment id this config came from — echoed back for display only. */
+  environment?: string;
+}
+
+export interface DynamoConfigResponse {
+  success: boolean;
+  region?: string;
+  tableName?: string;
+  endpoint?: string;
+  profile?: string;
+  environment?: string;
+  message?: string;
+}
+
+// ── workspace:load / workspace:save ──────────────────────────────────────────
+
+export interface PersistedTab {
+  id: string;
+  name: string;
+  query: string;
+  connectionId: string | null;
+  activeResultTab: 'table' | 'graph' | 'json';
+  history: Array<{ query: string; success: boolean; timestamp: string }>;
+}
+
+export interface PersistedDynamoState {
+  /** Active environment id (a key of `environments`). */
+  environment: string;
+  /** Full editable environment map, keyed by environment id. */
+  environments: Record<
+    string,
+    { label: string; region: string; tableName: string; endpoint: string; profile?: string }
+  >;
+}
+
+export interface PersistedUiState {
+  /** Property key used to label graph nodes, or one of the __auto__/__label__/__id__ sentinels. */
+  graphLabelProperty?: string;
+}
+
+export interface WorkspaceState {
+  version: number;
+  connections: ProviderConnectionDto[];
+  activeConnectionId: string | null;
+  tabs: PersistedTab[];
+  activeTabId: string | null;
+  dynamo?: PersistedDynamoState;
+  ui?: PersistedUiState;
+}
+
+export interface WorkspaceLoadResponse {
+  success: boolean;
+  state?: WorkspaceState;
+  /**
+   * False when OS-backed encryption is unavailable — connection secrets
+   * (password / token / primaryKey) are then NOT written to disk, and restored
+   * connections will need their credentials re-entered before connecting.
+   */
+  secretsAvailable: boolean;
+  message?: string;
+}
+
+export interface WorkspaceSaveResponse {
+  success: boolean;
+  message?: string;
+}
+
+// ── aws:list-profiles ────────────────────────────────────────────────────────
+
+export interface AwsProfilesResponse {
+  success: boolean;
+  /** Named profiles found in the shared AWS config, "default" first. */
+  profiles: string[];
+  /** Files that were checked — surfaced when the list comes back empty. */
+  sources: string[];
+  message?: string;
 }

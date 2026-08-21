@@ -9,6 +9,8 @@
  *   graph:*    — multi-provider system (new)
  *   connection:* — legacy Neptune-only channels (backwards-compatible)
  *   dynamo:*   — DynamoDB enrichment
+ *   workspace:* — on-disk persistence of connections / tabs / settings
+ *   aws:*      — shared AWS config lookups (named profiles)
  */
 export const IpcChannels = {
   // ── Multi-provider ─────────────────────────────────────────────────────────
@@ -33,6 +35,14 @@ export const IpcChannels = {
   DYNAMO_CONFIGURE: 'dynamo-configure',
   DYNAMO_GET_CONFIG: 'dynamo-get-config',
   DYNAMO_FETCH_ITEM: 'dynamo-fetch-item',
+
+  // ── AWS helpers ────────────────────────────────────────────────────────────
+  AWS_LIST_PROFILES: 'aws:list-profiles',
+
+  // ── Workspace persistence (connections, tabs, settings) ────────────────────
+  WORKSPACE_LOAD: 'workspace:load',
+  WORKSPACE_SAVE: 'workspace:save',
+  WORKSPACE_CLEAR: 'workspace:clear',
 } as const;
 
 export type IpcChannelName = (typeof IpcChannels)[keyof typeof IpcChannels];
