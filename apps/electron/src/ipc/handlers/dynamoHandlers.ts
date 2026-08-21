@@ -7,9 +7,9 @@ export function registerDynamoHandlers(
   channels: typeof IpcChannelsType,
   { dynamoService, log }: IpcDependencies,
 ): void {
-  ipcMain.handle(channels.DYNAMO_CONFIGURE, async (_event, { region, tableName, endpoint }) => {
+  ipcMain.handle(channels.DYNAMO_CONFIGURE, async (_event, { region, tableName, endpoint, profile, environment }) => {
     try {
-      return dynamoService.configure({ region, tableName, endpoint });
+      return dynamoService.configure({ region, tableName, endpoint, profile, environment });
     } catch (err) {
       log('error', 'DynamoDB configure error:', (err as Error).message);
       return { success: false, message: (err as Error).message };

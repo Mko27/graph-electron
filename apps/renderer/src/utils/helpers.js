@@ -99,3 +99,48 @@ export function getDisplayLabel(vertexLabel, propsMap, id) {
   const label = (vertexLabel != null && vertexLabel !== '') ? String(vertexLabel) : 'item';
   return `${label}\n${shortId}`;
 }
+
+// ===== Node labelling =====
+
+/**
+ * Sentinel values for the graph node-label selector. Anything else is treated
+ * as a literal property key to read off the node.
+ */
+export const LABEL_MODE_AUTO  = '__auto__';
+export const LABEL_MODE_LABEL = '__label__';
+export const LABEL_MODE_ID    = '__id__';
+
+export function truncateLabel(value, max = 20) {
+  const str = String(value);
+  return str.length > max ? str.substring(0, max) + '…' : str;
+}
+
+/**
+ * Resolve the text drawn inside a graph node.
+ *
+ * @param {string} fullLabel  vertex label (e.g. "person")
+ * @param {object} propsMap   flattened property map
+ * @param {string} id         vertex id
+ * @param {string} [mode]     LABEL_MODE_* sentinel, or a property key
+ */
+export function computeNodeLabel(fullLabel, propsMap, id, mode) {
+  const props = propsMap || {};
+
+  if (!mode || mode === LABEL_MODE_AUTO) {
+    return getDisplayLabel(fullLabel, props, id);
+  }
+  if (mode === LABEL_MODE_LABEL) {
+    return (fullLabel != null && fullLabel !== '') ? truncateLabel(fullLabel) : 'item';
+  }
+  if (mode === LABEL_MODE_ID) {
+    return truncateLabel(id, 16);
+  }
+
+  const value = props[mode];
+  if (value === undefined || value === null || value === '') {
+    // The chosen property is missing on this node — fall back to label + short
+    // id so it never renders blank.
+    return getDisplayLabel(fullLabel, {}, id);
+  }
+  return truncateLabel(value);
+}

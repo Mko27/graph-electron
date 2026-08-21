@@ -40,6 +40,12 @@ export interface NeptuneConnectionConfig extends BaseConnectionConfig {
   region?: string;
   useIamAuth?: boolean;
   traversalSource?: string;
+  /**
+   * Named AWS CLI profile (~/.aws/credentials or ~/.aws/config) to resolve
+   * credentials from, including SSO profiles set up via `aws configure sso`.
+   * Falls back to the default credential provider chain when unset.
+   */
+  profile?: string;
 }
 
 export interface Neo4jConnectionConfig extends BaseConnectionConfig {

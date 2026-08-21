@@ -24,6 +24,15 @@ export type {
   ConnectionSummary,
   GraphConnectionsResponse,
   ProviderConnectionDto,
+  DynamoConfigureRequest,
+  DynamoConfigResponse,
+  PersistedTab,
+  PersistedDynamoState,
+  PersistedUiState,
+  WorkspaceState,
+  WorkspaceLoadResponse,
+  WorkspaceSaveResponse,
+  AwsProfilesResponse,
 } from './ipc/contracts';
 
 export {
@@ -37,5 +46,9 @@ export {
   DEFAULT_POOL_MAX,
   DIALECT_COMPATIBILITY,
   PROVIDER_CAPABILITIES,
+  DYNAMO_ENVIRONMENTS,
+  DYNAMO_ENVIRONMENT_ORDER,
+  DEFAULT_DYNAMO_ENVIRONMENT,
+  APP_CHROME,
 } from './constants';
-export type { UICapabilities } from './constants';
+export type { UICapabilities, DynamoEnvironmentConfig, DynamoEnvironmentId } from './constants';

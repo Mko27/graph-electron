@@ -8,6 +8,7 @@ import type { JanusGraphConnectionConfig, QueryDialect } from '../../types/IConn
 import type { ConnectionState, SchemaInfo } from '../../types/IGraphProvider';
 import type { QueryResult } from '../../types/IQueryResult';
 import { BaseProvider, type Logger } from '../BaseProvider';
+import { normalizeGremlinResult } from '../shared/gremlinResultNormalizer';
 
 export class JanusGraphProvider extends BaseProvider {
   readonly capabilities: ProviderCapabilities = {
@@ -87,7 +88,8 @@ export class JanusGraphProvider extends BaseProvider {
         this.config.queryTimeoutMs ?? 30_000,
         'JanusGraph query',
       );
-      const data = (rs as { toArray(): unknown[] }).toArray() as T[];
+      const raw = (rs as { toArray(): unknown[] }).toArray();
+      const data = raw.map((v) => normalizeGremlinResult(v)) as T[];
       return { success: true, data, duration: Date.now() - start, count: data.length };
     }, 'JanusGraph query');
   }

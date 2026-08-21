@@ -77,3 +77,66 @@ export const DEFAULT_CONNECTION_TIMEOUT_MS = 15_000;
 export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_POOL_MIN = 1;
 export const DEFAULT_POOL_MAX = 5;
+
+/**
+ * DynamoDB environment presets.
+ *
+ * Each environment points at its own table (and optionally its own region,
+ * endpoint and AWS profile), so switching environment re-points the enrichment
+ * lookups without retyping the connection details.
+ *
+ * These are seed defaults only — the values are editable in the UI and the
+ * edited set is persisted with the workspace, so a wrong default is a one-time
+ * correction rather than a code change.
+ */
+export interface DynamoEnvironmentConfig {
+  label: string;
+  region: string;
+  tableName: string;
+  /** Empty string = real AWS (no custom endpoint override). */
+  endpoint: string;
+  /** Named AWS profile (incl. SSO profiles) used to resolve credentials. */
+  profile?: string;
+}
+
+export const DYNAMO_ENVIRONMENT_ORDER = ['local', 'stage', 'plive'] as const;
+
+export type DynamoEnvironmentId = (typeof DYNAMO_ENVIRONMENT_ORDER)[number];
+
+export const DYNAMO_ENVIRONMENTS: Record<string, DynamoEnvironmentConfig> = {
+  local: {
+    label: 'Local',
+    region: 'us-east-1',
+    tableName: 'development_blocks',
+    endpoint: 'http://localhost:8000',
+  },
+  stage: {
+    label: 'Stage',
+    region: 'us-east-1',
+    tableName: 'stage_blocks',
+    endpoint: '',
+  },
+  plive: {
+    label: 'Plive',
+    region: 'us-east-1',
+    tableName: 'plive_blocks',
+    endpoint: '',
+  },
+};
+
+export const DEFAULT_DYNAMO_ENVIRONMENT: string = 'local';
+
+/**
+ * Window chrome colors — shared by the Electron main process (BrowserWindow
+ * backgroundColor / Windows titleBarOverlay) and the renderer stylesheet, so
+ * the native title bar cannot drift from the app's own palette.
+ */
+export const APP_CHROME = {
+  /** Matches --bg-primary in styles.css */
+  background: '#0f172a',
+  /** Matches --bg-secondary — the sidebar / title-bar strip */
+  titleBar: '#1e293b',
+  /** Matches --text-primary — Windows caption button glyphs */
+  symbol: '#f1f5f9',
+  titleBarHeight: 36,
+} as const;

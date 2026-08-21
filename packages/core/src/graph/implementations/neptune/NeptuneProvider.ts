@@ -14,6 +14,7 @@ import type { NeptuneConnectionConfig, QueryDialect } from '../../types/IConnect
 import type { ConnectionState, SchemaInfo, TransactionContext } from '../../types/IGraphProvider';
 import type { QueryResult } from '../../types/IQueryResult';
 import { BaseProvider, type Logger } from '../BaseProvider';
+import { normalizeGremlinResult } from '../shared/gremlinResultNormalizer';
 
 export class NeptuneProvider extends BaseProvider {
   readonly capabilities: ProviderCapabilities = {
@@ -34,6 +35,7 @@ export class NeptuneProvider extends BaseProvider {
   };
 
   private client: unknown = null;
+  private credentialProvider: unknown = null;
 
   constructor(
     id: string,
@@ -58,6 +60,15 @@ export class NeptuneProvider extends BaseProvider {
         headers = await this._getSignedHeaders();
         this.log('info', 'Using IAM SigV4 authentication');
       } catch (err) {
+        // A profile was explicitly requested (e.g. an AWS SSO profile) — surface the
+        // failure instead of silently connecting unauthenticated, since that would
+        // otherwise show up as a confusing WebSocket handshake error further down.
+        if (this.config.profile) {
+          throw new Error(
+            `Failed to resolve AWS credentials for profile "${this.config.profile}": ${(err as Error).message}. ` +
+            `If this is an SSO profile, its session may have expired — run "aws sso login --profile ${this.config.profile}" and try again.`,
+          );
+        }
         this.log('warn', `SigV4 signing failed, connecting without IAM auth: ${(err as Error).message}`);
       }
     }
@@ -128,11 +139,12 @@ export class NeptuneProvider extends BaseProvider {
         'query',
       );
       const raw = (resultSet as { toArray(): unknown[] }).toArray();
+      const data = raw.map((v) => normalizeGremlinResult(v)) as T[];
       return {
         success: true,
-        data: raw as T[],
+        data,
         duration: Date.now() - start,
-        count: raw.length,
+        count: data.length,
       };
     }, 'Gremlin query');
   }
@@ -242,8 +254,14 @@ export class NeptuneProvider extends BaseProvider {
       body,
     });
 
+    if (!this.credentialProvider) {
+      this.credentialProvider = defaultProvider(
+        this.config.profile ? { profile: this.config.profile } : undefined,
+      );
+    }
+
     const signer = new SignatureV4({
-      credentials: defaultProvider(),
+      credentials: this.credentialProvider,
       region,
       service: 'neptune-db',
       sha256: Sha256,
