@@ -142,6 +142,9 @@ export class WorkspaceStore {
       activeConnectionId: state?.activeConnectionId ?? null,
       tabs: Array.isArray(state?.tabs) ? state!.tabs.filter(t => t && typeof t.id === 'string') : [],
       activeTabId: state?.activeTabId ?? null,
+      ...(Array.isArray(state?.environments)
+        ? { environments: state!.environments.filter(e => e && typeof e.id === 'string') }
+        : {}),
       ...(state?.dynamo ? { dynamo: state.dynamo } : {}),
       ...(state?.ui ? { ui: state.ui } : {}),
     };

@@ -20,6 +20,8 @@ import {
   isNeptuneVertex,
   escapeHtml,
   computeNodeLabel,
+  computeEdgeLabel,
+  autoLabelCandidates,
   LABEL_MODE_AUTO,
 } from '../utils/helpers.js';
 
@@ -37,7 +39,9 @@ export class CanvasGraph {
    * @param {HTMLCanvasElement} canvas
    * @param {object} options
    * @param {Function} [options.onShowDynamoModal] - callback(id, graphItem)
-   * @param {string} [options.labelProperty] - property key (or LABEL_MODE_* sentinel) to draw in nodes
+   * @param {string} [options.labelProperty] - fallback property key (or LABEL_MODE_* sentinel)
+   * @param {Record<string,string>} [options.labelModes] - per-vertex-label overrides
+   * @param {Record<string,string>} [options.edgeLabelModes] - per-edge-type overrides
    */
   constructor(canvas, options = {}) {
     this.canvas = canvas;
@@ -47,6 +51,12 @@ export class CanvasGraph {
     // Which property to draw inside each node — LABEL_MODE_AUTO picks a
     // sensible one per node; anything else is a literal property key.
     this._labelProperty = options.labelProperty || LABEL_MODE_AUTO;
+    // Per-vertex-label overrides: { block: 'block_type', … }. A mixed graph
+    // needs a different property per type, so this takes precedence over the
+    // fallback above.
+    this._labelModes = options.labelModes || {};
+    // Same idea for edges, keyed by edge type. Auto draws the type itself.
+    this._edgeLabelModes = options.edgeLabelModes || {};
     // Union of property keys seen across all nodes, for the label selector.
     this._propertyKeys = new Set();
 
@@ -178,9 +188,165 @@ export class CanvasGraph {
     return [...this._propertyKeys].sort((a, b) => a.localeCompare(b));
   }
 
-  /** Currently selected label property (or LABEL_MODE_* sentinel). */
+  /** Currently selected fallback label property (or LABEL_MODE_* sentinel). */
   getLabelProperty() {
     return this._labelProperty;
+  }
+
+  /**
+   * The vertex types in the loaded graph, with the colour they are drawn in and
+   * the property keys their own nodes carry — everything the label picker needs
+   * to offer a per-type choice.
+   * `autoKey` is the property Auto lands on for that type, so the picker can
+   * say which one it is instead of leaving "Auto" opaque.
+   * @returns {Array<{label: string, color: string, count: number, propertyKeys: string[], autoKey: string|null}>}
+   */
+  getLabelInfo() {
+    const byLabel = new Map();
+    for (const node of this._nodeArray) {
+      let entry = byLabel.get(node.fullLabel);
+      if (!entry) {
+        entry = { label: node.fullLabel, color: node.color, count: 0, keys: new Set() };
+        byLabel.set(node.fullLabel, entry);
+      }
+      entry.count++;
+      for (const key of Object.keys(node.properties || {})) entry.keys.add(key);
+    }
+    return [...byLabel.values()]
+      .map(e => ({
+        label: e.label,
+        color: e.color,
+        count: e.count,
+        propertyKeys: [...e.keys].sort((a, b) => a.localeCompare(b)),
+        autoKey: autoLabelCandidates(e.label).find(key => e.keys.has(key)) ?? null,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  /**
+   * The edge types in the loaded graph, with how many there are and the
+   * property keys their own edges carry.
+   * @returns {Array<{label: string, count: number, propertyKeys: string[]}>}
+   */
+  getEdgeLabelInfo() {
+    const byLabel = new Map();
+    for (const edge of this._edgesList) {
+      const label = edge.label || '(no type)';
+      let entry = byLabel.get(label);
+      if (!entry) {
+        entry = { label, count: 0, keys: new Set() };
+        byLabel.set(label, entry);
+      }
+      entry.count++;
+      for (const key of Object.keys(edge.properties || {})) entry.keys.add(key);
+    }
+    return [...byLabel.values()]
+      .map(e => ({
+        label: e.label,
+        count: e.count,
+        propertyKeys: [...e.keys].sort((a, b) => a.localeCompare(b)),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  /**
+   * Replace the per-edge-type overrides and redraw the lines' text in place.
+   * @param {Record<string,string>} modes
+   */
+  setEdgeLabelModes(modes) {
+    const next = modes || {};
+    const current = this._edgeLabelModes;
+    const sameSize = Object.keys(next).length === Object.keys(current).length;
+    if (sameSize && Object.keys(next).every(k => current[k] === next[k])) return;
+    this._edgeLabelModes = { ...next };
+    for (const edge of this._edgesList) {
+      edge.displayLabel = computeEdgeLabel(edge.label, edge.properties, edge.id, this._edgeLabelModes[edge.label]);
+    }
+    this._dirty = true;
+  }
+
+  /** Ids of edges that arrived with no properties — same story as the nodes. */
+  getEdgesMissingProperties() {
+    return this._edgesList
+      .filter(edge => !edge.properties || Object.keys(edge.properties).length === 0)
+      .map(edge => edge.id);
+  }
+
+  /**
+   * Merge fetched edge properties and re-resolve their drawn text.
+   *
+   * Keyed by `outV|inV|type` first: the edge id inside a `path()` result is not
+   * the id the server reports for that same edge, so only the endpoints match
+   * reliably. The id is still tried, for providers where it does match.
+   *
+   * @param {Record<string, Record<string, unknown>>} byKey
+   * @returns {number} how many edges gained properties
+   */
+  mergeEdgeProperties(byKey) {
+    if (!byKey) return 0;
+    let merged = 0;
+    for (const edge of this._edgesList) {
+      const props = byKey[`${edge.from}|${edge.to}|${edge.label}`] ?? byKey[edge.id];
+      if (!props) continue;
+      edge.properties = { ...edge.properties, ...props };
+      edge.displayLabel = computeEdgeLabel(edge.label, edge.properties, edge.id, this._edgeLabelModes[edge.label]);
+      merged++;
+    }
+    if (merged > 0) this._dirty = true;
+    return merged;
+  }
+
+  /**
+   * Ids of nodes that arrived with no properties. A `path()` traversal returns
+   * its elements as bare references — id and label only — so those nodes have
+   * nothing to label themselves with until the properties are fetched.
+   * @returns {string[]}
+   */
+  getNodesMissingProperties() {
+    return this._nodeArray
+      .filter(node => !node.properties || Object.keys(node.properties).length === 0)
+      .map(node => node.id);
+  }
+
+  /**
+   * Merge fetched properties into the loaded nodes and relabel them in place —
+   * no re-layout, so nothing moves under the user.
+   * @param {Record<string, Record<string, unknown>>} byId
+   * @returns {number} how many nodes gained properties
+   */
+  mergeNodeProperties(byId) {
+    if (!byId) return 0;
+    let merged = 0;
+    for (const node of this._nodeArray) {
+      const props = byId[node.id];
+      if (!props) continue;
+      node.properties = { ...node.properties, ...props };
+      for (const key of Object.keys(props)) this._propertyKeys.add(key);
+      node.label = computeNodeLabel(node.fullLabel, node.properties, node.id, this._modeFor(node.fullLabel));
+      merged++;
+    }
+    if (merged > 0) this._dirty = true;
+    return merged;
+  }
+
+  /** The mode that applies to one vertex type: its override, else the fallback. */
+  _modeFor(fullLabel) {
+    const override = this._labelModes[fullLabel];
+    return override || this._labelProperty;
+  }
+
+  /**
+   * Replace the per-vertex-label overrides. Relabels in place — no re-layout,
+   * so node positions are preserved.
+   * @param {Record<string,string>} modes
+   */
+  setLabelModes(modes) {
+    const next = modes || {};
+    const current = this._labelModes;
+    const sameSize = Object.keys(next).length === Object.keys(current).length;
+    if (sameSize && Object.keys(next).every(k => current[k] === next[k])) return;
+    this._labelModes = { ...next };
+    this._relabelNodes();
   }
 
   /**
@@ -195,10 +361,10 @@ export class CanvasGraph {
     this._relabelNodes();
   }
 
-  /** Recompute every node's drawn label from the current label property. */
+  /** Recompute every node's drawn label from the mode for its vertex type. */
   _relabelNodes() {
     for (const node of this._nodeArray) {
-      node.label = computeNodeLabel(node.fullLabel, node.properties, node.id, this._labelProperty);
+      node.label = computeNodeLabel(node.fullLabel, node.properties, node.id, this._modeFor(node.fullLabel));
     }
     this._dirty = true;
   }
@@ -283,7 +449,7 @@ export class CanvasGraph {
           if (hasMoreProps) Object.assign(existing.properties, propsMap);
           if (label != null) existing.fullLabel = label;
           existing.label = computeNodeLabel(
-            existing.fullLabel, existing.properties, nodeId, this._labelProperty,
+            existing.fullLabel, existing.properties, nodeId, this._modeFor(existing.fullLabel),
           );
           existing.color = getColorForLabel(existing.fullLabel);
           for (const key of Object.keys(existing.properties)) this._propertyKeys.add(key);
@@ -295,7 +461,7 @@ export class CanvasGraph {
       for (const key of Object.keys(propsMap)) this._propertyKeys.add(key);
       nodes.set(nodeId, {
         id: nodeId,
-        label: computeNodeLabel(effectiveLabel, propsMap, nodeId, this._labelProperty),
+        label: computeNodeLabel(effectiveLabel, propsMap, nodeId, this._modeFor(effectiveLabel)),
         fullLabel: effectiveLabel,
         color: getColorForLabel(effectiveLabel),
         properties: propsMap,
@@ -326,12 +492,17 @@ export class CanvasGraph {
         const to = toId != null ? String(toId) : '';
         if (!from || !to) return;
         const edgeLabel = (label != null && label !== '') ? String(label) : '';
+        const edgeIdStr = edgeId != null ? String(edgeId) : `${from}-${to}-${edges.length}`;
+        const edgeProps = properties && typeof properties === 'object' ? properties : {};
         edges.push({
           from,
           to,
           label: edgeLabel,
-          id: edgeId != null ? String(edgeId) : `${from}-${to}-${edges.length}`,
-          properties: properties && typeof properties === 'object' ? properties : {},
+          // What is drawn on the line; `label` stays the type, for the detail
+          // panel and for the picker to group by.
+          displayLabel: computeEdgeLabel(edgeLabel, edgeProps, edgeIdStr, this._edgeLabelModes[edgeLabel]),
+          id: edgeIdStr,
+          properties: edgeProps,
           fromLabel: fromLabel != null ? String(fromLabel) : 'unknown',
           toLabel: toLabel != null ? String(toLabel) : 'unknown',
         });
@@ -1010,7 +1181,8 @@ export class CanvasGraph {
       ctx.fillStyle = isHighlighted ? '#a78bfa' : 'rgba(100, 116, 139, 0.6)';
       ctx.fill();
 
-      const edgeLabelText = (edge.label != null && edge.label !== '') ? String(edge.label) : '';
+      const drawn = edge.displayLabel !== undefined ? edge.displayLabel : edge.label;
+      const edgeLabelText = (drawn != null && drawn !== '') ? String(drawn) : '';
       if (showEdgeLabels && edgeLabelText) {
         const mx = (from.x + to.x) / 2;
         const my = (from.y + to.y) / 2;
