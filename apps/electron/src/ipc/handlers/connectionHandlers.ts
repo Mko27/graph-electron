@@ -29,7 +29,7 @@ export function validateId(payload: unknown): string | null {
 export function registerConnectionHandlers(
   ipcMain: IpcMain,
   channels: typeof IpcChannelsType,
-  { connectionManager, log }: IpcDependencies,
+  { connectionManager, workspaceStore, log }: IpcDependencies,
 ): void {
   // ── List available providers and dialects ────────────────────────────────
   ipcMain.handle(channels.GRAPH_PROVIDERS, () => {
@@ -49,12 +49,32 @@ export function registerConnectionHandlers(
       return { success: false, message: validationError };
     }
     try {
-      const result = await connectionManager.connect(config as Parameters<ConnectionManager['connect']>[0]);
+      // Credentials live in the main process. Anything the renderer supplied is
+      // absorbed here; anything it did not is filled in from the encrypted
+      // store, so a restored connection can connect without the renderer ever
+      // holding its password.
+      workspaceStore.rememberSecrets(config as Parameters<typeof workspaceStore.rememberSecrets>[0]);
+      const withSecrets = workspaceStore.applySecrets(
+        config as Parameters<typeof workspaceStore.applySecrets>[0],
+      );
+
+      const result = await connectionManager.connect(withSecrets as Parameters<ConnectionManager['connect']>[0]);
       return { ...result };
     } catch (err) {
       log('error', `graph:connect error for "${(config as Record<string,unknown>).id}":`, (err as Error).message);
       return { success: false, message: (err as Error).message };
     }
+  });
+
+  // ── Forget a connection's stored credentials ─────────────────────────────
+  ipcMain.handle(channels.CONNECTION_REMOVE, async (_event, payload) => {
+    const err = validateId(payload);
+    if (err) return { success: false, message: err };
+    const { id } = payload as Record<string, string>;
+    await connectionManager.disconnect(id).catch(() => undefined);
+    workspaceStore.forgetSecrets(id);
+    log('info', `connection:remove — dropped stored credentials for "${id}"`);
+    return { success: true };
   });
 
   // ── Disconnect ───────────────────────────────────────────────────────────

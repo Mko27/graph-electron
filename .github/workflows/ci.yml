@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # Electron's postinstall downloads a ~90MB runtime that none of the
+      # checks below need, and it is the slowest part of a clean install.
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Both of these must pass WITHOUT a build step first — that regression is
+      # what let broken Neo4j code sit on main unnoticed.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      - name: Build (compile + bundle)
+        run: npm run compile && npm run bundle

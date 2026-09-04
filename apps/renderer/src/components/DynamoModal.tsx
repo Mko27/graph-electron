@@ -2,7 +2,7 @@
  * DynamoModal — full-screen overlay to display DynamoDB item data.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApp } from '../state/AppContext';
 
 function DynamoValue({ value }: { value: unknown }) {
@@ -85,10 +85,60 @@ export function DynamoModal({
     if (e.target === e.currentTarget) onClose();
   }, [onClose]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Escape closes, and Tab is confined to the dialog.
+   *
+   * Without the trap, tabbing walked straight out of the open dialog into the
+   * page behind it, which a keyboard or screen-reader user cannot see is
+   * covered. Focus is also moved into the dialog on open and returned to
+   * whatever had it when the dialog closes.
+   */
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    dialogRef.current?.focus();
+
+    const focusableSelector = [
+      'a[href]', 'button:not([disabled])', 'input:not([disabled])',
+      'select:not([disabled])', 'textarea:not([disabled])', '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
+
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+
+      const root = dialogRef.current;
+      if (!root) return;
+      const items = Array.from(root.querySelectorAll<HTMLElement>(focusableSelector))
+        .filter(el => el.offsetParent !== null);
+      if (items.length === 0) {
+        e.preventDefault();
+        root.focus();
+        return;
+      }
+
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+
+      if (e.shiftKey && (active === first || active === root)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
     document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    return () => {
+      document.removeEventListener('keydown', handler);
+      previouslyFocused?.focus?.();
+    };
   }, [onClose]);
 
   const gItem = graphItem as ({ type?: string; data?: { fullLabel?: string; label?: string } }) | null;
@@ -102,7 +152,14 @@ export function DynamoModal({
 
   return (
     <div className="dynamo-modal-overlay visible" onClick={onOverlayClick}>
-      <div className="dynamo-modal">
+      <div
+        className="dynamo-modal"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`DynamoDB record for ${label || id}`}
+        tabIndex={-1}
+      >
         <div className="dynamo-modal-header">
           <div className="dynamo-modal-title">
             {typeBadge}

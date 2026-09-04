@@ -11,7 +11,7 @@ import { BaseProvider, type Logger } from '../BaseProvider';
 export class OrientDBProvider extends BaseProvider {
   readonly capabilities: ProviderCapabilities = {
     supportsTransactions: true,
-    supportsSchema: true,
+    supportsSchema: false, // introspectSchema is a stub — see the method body
     supportsMultiGraph: true,
     supportsStreaming: false,
     supportsGremlin: true,
@@ -56,7 +56,9 @@ export class OrientDBProvider extends BaseProvider {
 
   async disconnect(): Promise<void> {
     if (!this.client) return;
-    (this.client as { close(): void }).close();
+    // close() returns a promise — awaiting it means "disconnected" is true
+    // by the time we say so, instead of while the socket is still closing.
+    await (this.client as { close(): Promise<void> | void }).close();
     this.client = null;
   }
 
@@ -82,7 +84,9 @@ export class OrientDBProvider extends BaseProvider {
     if (!this.client) throw new Error('Not connected to OrientDB');
     const start = Date.now();
 
-    return this.withRetry(async () => {
+    this.validateQuery(query, dialect);
+
+    return this.withQueryRetry(query, dialect, async () => {
       const rs = await this.withTimeout(
         (this.client as { submit(q: string, b: Record<string, unknown>): Promise<unknown> })
           .submit(query, parameters),

@@ -10,7 +10,7 @@ export function registerWorkspaceHandlers(
 ): void {
   ipcMain.handle(channels.WORKSPACE_LOAD, () => workspaceStore.load());
 
-  ipcMain.handle(channels.WORKSPACE_SAVE, (_event, payload) => {
+  ipcMain.handle(channels.WORKSPACE_SAVE, async (_event, payload) => {
     const state = (payload as { state?: WorkspaceState } | undefined)?.state;
     if (!state || typeof state !== 'object') {
       return { success: false, message: 'state is required' };

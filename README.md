@@ -24,11 +24,36 @@ NebulaGraph, or any TinkerPop-compatible database from a single UI.
 
 ## Quick Start
 
+Requires Node 20.11+ (see `.nvmrc`; `nvm use` picks it up).
+
 ```bash
-npm install
+npm install       # must run Electron's postinstall — see the note below
+npm start         # compiles, bundles (dev mode) and launches
+```
+
+`npm start` runs the compile and bundle steps itself, so those are only needed
+separately when you want to inspect their output:
+
+```bash
 npm run compile   # compile TypeScript packages
-npm run bundle    # bundle React renderer
-npm start         # launch app
+npm run bundle    # bundle the renderer (production, minified)
+npm run bundle:dev
+```
+
+Verifying the checkout needs no build step at all:
+
+```bash
+npm run typecheck
+npm test
+```
+
+**If `npm start` fails with a missing Electron framework**, the install skipped
+Electron's postinstall, which is what downloads the ~90MB runtime, leaving the
+package a stub. The repo's `.npmrc` sets `ignore-scripts=false` to prevent
+this; if your npm config overrides it, run:
+
+```bash
+npm rebuild electron        # or: npm install --foreground-scripts
 ```
 
 See [ONBOARDING.md](ONBOARDING.md) for detailed setup.
@@ -45,12 +70,12 @@ See [ONBOARDING.md](ONBOARDING.md) for detailed setup.
 | [docs/provider-capabilities.md](docs/provider-capabilities.md) | Capability matrix |
 | [packages/core/README.md](packages/core/README.md) | Core package reference |
 | [packages/shared/README.md](packages/shared/README.md) | Shared types reference |
-| [packages/db-clients/README.md](packages/db-clients/README.md) | DB client wrappers reference |
+| [packages/db-clients/README.md](packages/db-clients/README.md) | DB client wrappers — **currently unused**, superseded by `packages/core` providers |
 
 ## Architecture (30-second version)
 
 ```
-apps/renderer  ──IPC──►  apps/electron  ──►  packages/core  ──►  packages/db-clients
+apps/renderer  ──IPC──►  apps/electron  ──►  packages/core  ──►  database drivers
    (React)                 (Node.js)          (Business logic)      (Driver wrappers)
                                 │
                          packages/shared

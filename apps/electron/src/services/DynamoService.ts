@@ -65,6 +65,11 @@ export class DynamoService {
   constructor(private readonly log: Logger) {}
 
   private initClient(region: string, endpoint: string, profile: string): void {
+    // Destroy the previous client first. Assigning over it left its keep-alive
+    // sockets open for the life of the app, so every environment switch leaked
+    // a connection pool.
+    this._destroyClient();
+
     const clientConfig: { region: string; endpoint?: string; credentials?: unknown } = { region };
     if (endpoint) clientConfig.endpoint = endpoint;
     // A named profile is only meaningful against real AWS; the default chain
@@ -100,6 +105,23 @@ export class DynamoService {
 
   getConfig(): DynamoConfig & { initialized: boolean } {
     return { ...this.config, initialized: this.docClient !== null };
+  }
+
+  /** Release the current client's sockets. Safe to call when none exists. */
+  private _destroyClient(): void {
+    try {
+      (this.docClient as { destroy?(): void } | null)?.destroy?.();
+      (this.client as { destroy?(): void } | null)?.destroy?.();
+    } catch (err) {
+      this.log('warn', `DynamoDB: error releasing previous client: ${(err as Error).message}`);
+    }
+    this.docClient = null;
+    this.client = null;
+  }
+
+  /** Called on shutdown so the app does not exit with sockets still open. */
+  dispose(): void {
+    this._destroyClient();
   }
 
   async fetchItem(id: string): Promise<FetchResult> {

@@ -26,11 +26,18 @@ interface Neo4jSummary {
   resultConsumedAfter: { toNumber(): number };
 }
 
+/**
+ * What `session.run()` resolves to. The driver's Result object is thenable and
+ * exposes records/summary as PROPERTIES on the resolved value — there is no
+ * `records()` method on it (verified against neo4j-driver 5.28.3).
+ */
+interface Neo4jQueryResult {
+  records: Neo4jRecord[];
+  summary: Neo4jSummary;
+}
+
 interface Neo4jSession {
-  run(query: string, params?: Record<string, unknown>): {
-    records(): Promise<Neo4jRecord[]>;
-    summary(): Promise<Neo4jSummary>;
-  };
+  run(query: string, params?: Record<string, unknown>): Promise<Neo4jQueryResult>;
   beginTransaction(): Neo4jTx;
   close(): Promise<void>;
 }
@@ -69,7 +76,12 @@ export class Neo4jProvider extends BaseProvider {
   };
 
   private driver: Neo4jDriverInstance | null = null;
-  private activeTxMap = new Map<string, Neo4jTx>();
+  /**
+   * The session is held alongside the transaction: a session opened for a
+   * transaction has to be closed when that transaction ends, or the driver's
+   * connection pool is exhausted after maxConnectionPoolSize transactions.
+   */
+  private activeTxMap = new Map<string, { tx: Neo4jTx; session: Neo4jSession }>();
 
   constructor(
     id: string,
@@ -86,15 +98,21 @@ export class Neo4jProvider extends BaseProvider {
       );
     }
 
-    const protocol = this.config.ssl ? 'neo4j+s' : 'neo4j';
+    // The driver rejects being told about encryption twice: passing a +s/+ssc
+    // scheme AND encrypted/trust options throws "Encryption/trust can only be
+    // configured either through URL or config, not both". Encode it in the
+    // scheme only, and pass no encryption options below.
+    const protocol = !this.config.ssl
+      ? 'neo4j'
+      : this.config.trustStrategy === 'TRUST_ALL_CERTIFICATES'
+        ? 'neo4j+ssc' // self-signed certificates accepted
+        : 'neo4j+s';  // system CA verification
     const uri = `${protocol}://${this.config.host}:${this.config.port}`;
 
     this.log('info', `Connecting to Neo4j at ${uri}`);
 
     const auth = neo4jDriver.auth.basic(this.config.username, this.config.password);
     this.driver = neo4jDriver.driver(uri, auth, {
-      encrypted: this.config.ssl,
-      trust: this.config.trustStrategy ?? 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES',
       connectionTimeout: this.config.connectionTimeoutMs ?? 15_000,
       maxConnectionPoolSize: this.config.poolMax ?? 10,
     }) as unknown as Neo4jDriverInstance;
@@ -111,6 +129,15 @@ export class Neo4jProvider extends BaseProvider {
   async disconnect(): Promise<void> {
     if (!this.driver) return;
     this.log('info', 'Disconnecting from Neo4j');
+
+    // Roll back and release anything still in flight, so closing the driver
+    // does not strand open sessions.
+    for (const [id, { tx, session }] of this.activeTxMap) {
+      await tx.rollback().catch(() => undefined);
+      this.activeTxMap.delete(id);
+      await session.close().catch(() => undefined);
+    }
+
     await this.driver.close().catch(() => undefined);
     this.driver = null;
   }
@@ -136,20 +163,22 @@ export class Neo4jProvider extends BaseProvider {
 
     const start = Date.now();
 
-    return this.withRetry(async () => {
+    this.validateQuery(query, dialect);
+
+    return this.withQueryRetry(query, dialect, async () => {
       const session = this.driver!.session({
         database: this.config.database ?? 'neo4j',
       });
 
       try {
-        const result = session.run(query, parameters);
-        const [records, summary] = await Promise.all([
-          result.records(),
-          result.summary(),
-        ]);
+        const result = await this.withTimeout(
+          session.run(query, parameters),
+          this.config.queryTimeoutMs ?? 30_000,
+          'Neo4j query',
+        );
 
-        const data = records.map((r) => this._recordToObject(r)) as T[];
-        const availableAfter = summary.resultAvailableAfter.toNumber();
+        const data = result.records.map((r) => this._recordToObject(r)) as T[];
+        const availableAfter = result.summary.resultAvailableAfter.toNumber();
 
         return {
           success: true,
@@ -171,11 +200,14 @@ export class Neo4jProvider extends BaseProvider {
 
     const session = this.driver.session({ database: this.config.database ?? 'neo4j' });
     try {
-      const [labelsResult, relTypesResult, propKeysResult] = await Promise.all([
-        session.run('CALL db.labels() YIELD label RETURN label').records(),
-        session.run('CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType').records(),
-        session.run('CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey').records(),
+      const [labels, relTypes, propKeys] = await Promise.all([
+        session.run('CALL db.labels() YIELD label RETURN label'),
+        session.run('CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType'),
+        session.run('CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey'),
       ]);
+      const labelsResult   = labels.records;
+      const relTypesResult = relTypes.records;
+      const propKeysResult = propKeys.records;
 
       return {
         vertexLabels: labelsResult.map((r) => ({
@@ -200,10 +232,10 @@ export class Neo4jProvider extends BaseProvider {
     if (!this.driver) throw new Error('Not connected to Neo4j');
     const session = this.driver.session();
     try {
-      const records = await session
-        .run('SHOW DATABASES YIELD name, currentStatus WHERE currentStatus = "online" RETURN name')
-        .records();
-      return records.map((r) => r.get('name') as string);
+      const result = await session.run(
+        'SHOW DATABASES YIELD name, currentStatus WHERE currentStatus = "online" RETURN name',
+      );
+      return result.records.map((r) => r.get('name') as string);
     } catch {
       // Neo4j Community edition doesn't support SHOW DATABASES
       return [this.config.database ?? 'neo4j'];
@@ -221,22 +253,34 @@ export class Neo4jProvider extends BaseProvider {
       startTime: new Date(),
       operationCount: 0,
     };
-    this.activeTxMap.set(ctx.id, tx);
+    this.activeTxMap.set(ctx.id, { tx, session });
     return ctx;
   }
 
   async commitTransaction(ctx: TransactionContext): Promise<void> {
-    const tx = this.activeTxMap.get(ctx.id);
-    if (!tx) throw new Error(`Transaction ${ctx.id} not found`);
-    await tx.commit();
-    this.activeTxMap.delete(ctx.id);
+    const entry = this.activeTxMap.get(ctx.id);
+    if (!entry) throw new Error(`Transaction ${ctx.id} not found`);
+    try {
+      await entry.tx.commit();
+    } finally {
+      await this._endTransaction(ctx.id, entry.session);
+    }
   }
 
   async rollbackTransaction(ctx: TransactionContext): Promise<void> {
-    const tx = this.activeTxMap.get(ctx.id);
-    if (!tx) throw new Error(`Transaction ${ctx.id} not found`);
-    await tx.rollback();
-    this.activeTxMap.delete(ctx.id);
+    const entry = this.activeTxMap.get(ctx.id);
+    if (!entry) throw new Error(`Transaction ${ctx.id} not found`);
+    try {
+      await entry.tx.rollback();
+    } finally {
+      await this._endTransaction(ctx.id, entry.session);
+    }
+  }
+
+  /** Drop the transaction and release its session back to the pool. */
+  private async _endTransaction(id: string, session: Neo4jSession): Promise<void> {
+    this.activeTxMap.delete(id);
+    await session.close().catch(() => undefined);
   }
 
   private _recordToObject(record: Neo4jRecord): Record<string, unknown> {

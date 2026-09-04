@@ -8,12 +8,13 @@ import type { CosmosDBConnectionConfig, QueryDialect } from '../../types/IConnec
 import type { ConnectionState, SchemaInfo } from '../../types/IGraphProvider';
 import type { QueryResult } from '../../types/IQueryResult';
 import { BaseProvider, type Logger } from '../BaseProvider';
+import { isLocalHost } from '../../../utils/network';
 
 export class CosmosDBProvider extends BaseProvider {
   readonly capabilities: ProviderCapabilities = {
     supportsTransactions: false,
     supportsSchema: false,
-    supportsMultiGraph: true, // Cosmos supports multiple containers/collections
+    supportsMultiGraph: false, // one container per connection; no switching path exists
     supportsStreaming: false,
     supportsGremlin: true,
     supportsCypher: false,
@@ -49,12 +50,28 @@ export class CosmosDBProvider extends BaseProvider {
     );
 
     const { Client } = gremlin.driver;
-    this.client = new Client(url, {
+
+    const clientOptions: Record<string, unknown> = {
       authenticator,
       traversalSource: 'g',
-      rejectUnauthorized: false,
       mimeType: 'application/vnd.gremlin-v2.0+json',
-    });
+    };
+
+    // The Cosmos DB emulator serves a self-signed certificate, so verification
+    // has to be relaxed to talk to it. For any remote endpoint the option is
+    // omitted entirely, leaving the driver's normal certificate validation in
+    // place — disabling it there would expose the primary key to a
+    // man-in-the-middle.
+    if (isLocalHost(this.config.host)) {
+      clientOptions.rejectUnauthorized = false;
+      this.log(
+        'warn',
+        `TLS certificate verification disabled for local endpoint "${this.config.host}" ` +
+        '(expected for the Cosmos DB emulator)',
+      );
+    }
+
+    this.client = new Client(url, clientOptions);
 
     await (this.client as { open(): Promise<void> }).open();
     this.log('info', 'Connected to Azure Cosmos DB Gremlin API');
@@ -62,7 +79,9 @@ export class CosmosDBProvider extends BaseProvider {
 
   async disconnect(): Promise<void> {
     if (!this.client) return;
-    (this.client as { close(): void }).close();
+    // close() returns a promise — awaiting it means "disconnected" is true
+    // by the time we say so, instead of while the socket is still closing.
+    await (this.client as { close(): Promise<void> | void }).close();
     this.client = null;
   }
 
@@ -88,7 +107,9 @@ export class CosmosDBProvider extends BaseProvider {
     if (!this.client) throw new Error('Not connected to Azure Cosmos DB');
     const start = Date.now();
 
-    return this.withRetry(async () => {
+    this.validateQuery(query, dialect);
+
+    return this.withQueryRetry(query, dialect, async () => {
       const rs = await this.withTimeout(
         (this.client as { submit(q: string, b: Record<string, unknown>): Promise<unknown> })
           .submit(query, parameters),

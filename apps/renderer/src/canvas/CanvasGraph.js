@@ -93,6 +93,12 @@ export class CanvasGraph {
 
     // Warning message for non-graph data
     this._dataWarning = null;
+    /**
+     * Set when the render caps dropped part of the result, so the UI can say
+     * the picture is incomplete. Previously the nodes past the cap simply
+     * vanished with only a console warning, and the graph looked complete.
+     */
+    this._truncation = null;
 
     this._bindEvents();
     this._resize();
@@ -107,6 +113,7 @@ export class CanvasGraph {
    */
   async setData(data) {
     this._dataWarning = null;
+    this._truncation = null;
 
     // Normalize: accept raw array or object with data/edges/results array (e.g. { data: [...] })
     const raw = data;
@@ -160,7 +167,16 @@ export class CanvasGraph {
       nodeCount: this._nodeArray.length,
       edgeCount: this._edgesList.length,
       hasData: this._nodeArray.length > 0,
+      truncation: this._truncation,
     };
+  }
+
+  /**
+   * Details of what the render caps dropped, or null when the graph is whole.
+   * @returns {{nodesDropped: number, edgesDropped: number, message: string}|null}
+   */
+  getTruncation() {
+    return this._truncation;
   }
 
   /**
@@ -419,7 +435,7 @@ export class CanvasGraph {
     let colorIdx = 0;
 
     // Track what types of data we encountered for better error messages
-    let stats = { total: 0, vertices: 0, edges: 0, paths: 0, maps: 0, primitives: 0, other: 0 };
+    let stats = { total: 0, vertices: 0, edges: 0, paths: 0, maps: 0, primitives: 0, other: 0, edgesSeen: 0 };
 
     const getColorForLabel = (label) => {
       if (!labelColors[label]) {
@@ -487,6 +503,7 @@ export class CanvasGraph {
 
     // Canonical edge shape: { from, to, label, id, properties, fromLabel, toLabel } — all strings except properties (object)
     const addEdge = (fromId, toId, label, edgeId, properties, fromLabel, toLabel) => {
+      stats.edgesSeen++;
       if (edges.length < MAX_RENDER_EDGES) {
         const from = fromId != null ? String(fromId) : '';
         const to = toId != null ? String(toId) : '';
@@ -752,8 +769,12 @@ export class CanvasGraph {
       console.warn(`[CanvasGraph] No nodes extracted. First item keys: [${keys.join(', ')}], hasOutV/inV: ${hasOutIn}. Unwrapped sample:`, firstUnwrapped && typeof firstUnwrapped === 'object' ? JSON.stringify(firstUnwrapped).slice(0, 300) : firstUnwrapped);
     }
 
-    // Cap nodes
+    // Cap nodes. Edges are capped as they are added (see addEdge).
+    const edgesDropped = Math.max(0, stats.edgesSeen - edges.length);
+    let nodesDropped = 0;
+
     if (nodes.size > MAX_RENDER_NODES) {
+      nodesDropped = nodes.size - MAX_RENDER_NODES;
       const allKeys = Array.from(nodes.keys());
       const edgeNodeIds = new Set();
       edges.forEach(e => { edgeNodeIds.add(e.from); edgeNodeIds.add(e.to); });
@@ -772,6 +793,22 @@ export class CanvasGraph {
       const validEdges = edges.filter(e => nodes.has(e.from) && nodes.has(e.to));
       edges.length = 0;
       edges.push(...validEdges);
+    }
+
+    if (nodesDropped > 0 || edgesDropped > 0) {
+      const parts = [];
+      if (nodesDropped > 0) parts.push(`${nodesDropped.toLocaleString()} of ${(nodesDropped + MAX_RENDER_NODES).toLocaleString()} nodes`);
+      if (edgesDropped > 0) parts.push(`${edgesDropped.toLocaleString()} edges`);
+      this._truncation = {
+        nodesDropped,
+        edgesDropped,
+        maxNodes: MAX_RENDER_NODES,
+        maxEdges: MAX_RENDER_EDGES,
+        message:
+          `Showing a partial graph — ${parts.join(' and ')} are not drawn ` +
+          `(limit ${MAX_RENDER_NODES.toLocaleString()} nodes / ${MAX_RENDER_EDGES.toLocaleString()} edges). ` +
+          `Narrow the query to see everything.`,
+      };
     }
 
     // Build a helpful warning message if no graph data was extracted

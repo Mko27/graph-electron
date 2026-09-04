@@ -15,6 +15,12 @@ import type { ConnectionState, SchemaInfo, TransactionContext } from '../../type
 import type { QueryResult } from '../../types/IQueryResult';
 import { BaseProvider, type Logger } from '../BaseProvider';
 import { normalizeGremlinResult } from '../shared/gremlinResultNormalizer';
+import { GREMLIN_MIME_TYPE } from '../shared/gremlinSerializer';
+
+/** Vertices/edges sampled when introspecting the schema (see introspectSchema). */
+const SCHEMA_SAMPLE_SIZE = 10_000;
+/** Upper bound on how long schema introspection may take. */
+const SCHEMA_TIMEOUT_MS = 15_000;
 
 export class NeptuneProvider extends BaseProvider {
   readonly capabilities: ProviderCapabilities = {
@@ -75,7 +81,7 @@ export class NeptuneProvider extends BaseProvider {
 
     this.client = new Client(url, {
       traversalSource: this.config.traversalSource ?? 'g',
-      mimeType: 'application/json',
+      mimeType: GREMLIN_MIME_TYPE,
       pingEnabled: false,
       headers,
     });
@@ -93,7 +99,10 @@ export class NeptuneProvider extends BaseProvider {
     if (!this.client) return;
     this.log('info', 'Disconnecting from Neptune');
     try {
-      (this.client as { close(): void }).close();
+      // close() returns a promise. Not awaiting it reports "disconnected"
+      // while the socket is still closing, so a reconnect stacks a new link on
+      // top of the old one and quitting can cut it off mid-close.
+      await (this.client as { close(): Promise<void> | void }).close();
     } catch (err) {
       this.log('error', 'Error during disconnect:', (err as Error).message);
     }
@@ -125,14 +134,18 @@ export class NeptuneProvider extends BaseProvider {
 
     const start = Date.now();
 
+    this.validateQuery(query, dialect);
+
     if (dialect === 'opencypher') {
-      return this.withRetry(
+      return this.withQueryRetry(
+        query,
+        dialect,
         () => this._executeOpenCypher<T>(query, parameters, start),
         'openCypher query',
       );
     }
 
-    return this.withRetry(async () => {
+    return this.withQueryRetry(query, dialect, async () => {
       const resultSet = await this.withTimeout(
         this._submitRaw(query, parameters),
         this.config.queryTimeoutMs ?? 30_000,
@@ -151,25 +164,36 @@ export class NeptuneProvider extends BaseProvider {
 
   async introspectSchema(): Promise<SchemaInfo> {
     if (!this.client) throw new Error('Not connected to Neptune');
-    try {
-      const [vLabels, eLabels, vProps, eProps] = await Promise.all([
-        this._submitRaw('g.V().label().dedup()').then((rs) => (rs as { toArray(): unknown[] }).toArray()),
-        this._submitRaw('g.E().label().dedup()').then((rs) => (rs as { toArray(): unknown[] }).toArray()),
-        this._submitRaw('g.V().properties().key().dedup()').then((rs) => (rs as { toArray(): unknown[] }).toArray()),
-        this._submitRaw('g.E().properties().key().dedup()').then((rs) => (rs as { toArray(): unknown[] }).toArray()),
-      ]);
 
-      const propKeySet = new Set([...vProps as string[], ...eProps as string[]]);
+    // These traversals used to be unbounded and untimed, so simply connecting
+    // launched four full scans of every vertex and edge — slow and expensive on
+    // a production graph. Sample a bounded prefix instead and cap the wait.
+    const sample = SCHEMA_SAMPLE_SIZE;
+    const timeoutMs = Math.min(this.config.queryTimeoutMs ?? 30_000, SCHEMA_TIMEOUT_MS);
 
-      return {
-        vertexLabels: (vLabels as string[]).map((label) => ({ label, properties: [] })),
-        edgeLabels: (eLabels as string[]).map((label) => ({ label, properties: [] })),
-        propertyKeys: [...propKeySet].map((name) => ({ name, dataType: 'unknown' })),
-      };
-    } catch (err) {
-      this.log('error', 'Schema introspection failed:', (err as Error).message);
-      return { vertexLabels: [], edgeLabels: [], propertyKeys: [] };
-    }
+    const collect = (traversal: string) =>
+      this.withTimeout(
+        this._submitRaw(traversal).then((rs) => (rs as { toArray(): unknown[] }).toArray()),
+        timeoutMs,
+        'Neptune schema introspection',
+      );
+
+    // Failures propagate: returning an empty schema here made a broken or
+    // timed-out introspection indistinguishable from a genuinely empty graph.
+    const [vLabels, eLabels, vProps, eProps] = await Promise.all([
+      collect(`g.V().limit(${sample}).label().dedup()`),
+      collect(`g.E().limit(${sample}).label().dedup()`),
+      collect(`g.V().limit(${sample}).properties().key().dedup()`),
+      collect(`g.E().limit(${sample}).properties().key().dedup()`),
+    ]);
+
+    const propKeySet = new Set([...vProps as string[], ...eProps as string[]]);
+
+    return {
+      vertexLabels: (vLabels as string[]).map((label) => ({ label, properties: [] })),
+      edgeLabels: (eLabels as string[]).map((label) => ({ label, properties: [] })),
+      propertyKeys: [...propKeySet].map((name) => ({ name, dataType: 'unknown' })),
+    };
   }
 
   async listGraphs(): Promise<string[]> {
@@ -213,14 +237,50 @@ export class NeptuneProvider extends BaseProvider {
       Object.assign(headers, signedHeaders);
     }
 
-    const response = await fetch(url, { method: 'POST', headers, body });
+    // Without an abort signal this request had no timeout at all, so a hanging
+    // openCypher query hung the tab indefinitely.
+    const timeoutMs = this.config.queryTimeoutMs ?? 30_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(url, { method: 'POST', headers, body, signal: controller.signal });
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        throw new Error(`Neptune openCypher query timed out after ${timeoutMs}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Neptune openCypher request failed (${response.status}): ${text}`);
     }
 
-    const json = await response.json() as { results: { bindings: unknown[] } };
-    const data = json.results?.bindings ?? [];
+    // Neptune's openCypher endpoint returns { results: [ {...row}, ... ] }.
+    // Reading it as the SPARQL-shaped results.bindings yielded undefined, which
+    // then fell back to [] — turning a shape mismatch into a silent "0 rows".
+    const json = await response.json() as { results?: unknown };
+    const raw = json.results;
+
+    let data: unknown[];
+    if (Array.isArray(raw)) {
+      data = raw;
+    } else if (raw && Array.isArray((raw as { bindings?: unknown[] }).bindings)) {
+      // SPARQL-shaped payload — accepted for completeness.
+      data = (raw as { bindings: unknown[] }).bindings;
+    } else if (raw == null) {
+      throw new Error(
+        'Neptune openCypher returned no "results" field — unexpected response shape',
+      );
+    } else {
+      throw new Error(
+        `Neptune openCypher returned an unexpected "results" shape (${typeof raw})`,
+      );
+    }
 
     return {
       success: true,

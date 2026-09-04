@@ -35,12 +35,17 @@ export class Neo4jBoltClient {
 
   async open(): Promise<void> {
     if (!driver) throw new Error('neo4j-driver is not installed. Run: npm install neo4j-driver');
-    const proto = this.opts.ssl ? 'neo4j+s' : 'neo4j';
+    // Encryption goes in the URL scheme OR the config, never both: the driver
+    // throws "Encryption/trust can only be configured either through URL or
+    // config, not both". (Same defect as NeptuneProvider's Neo4j sibling had.)
+    const proto = !this.opts.ssl
+      ? 'neo4j'
+      : this.opts.trustStrategy === 'TRUST_ALL_CERTIFICATES'
+        ? 'neo4j+ssc'
+        : 'neo4j+s';
     const uri = `${proto}://${this.opts.host}:${this.opts.port}`;
     const auth = driver.auth.basic(this.opts.username, this.opts.password);
     this.d = driver.driver(uri, auth, {
-      encrypted: this.opts.ssl,
-      trust: this.opts.trustStrategy ?? 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES',
       connectionTimeout: this.opts.connectionTimeoutMs ?? 15_000,
       maxConnectionPoolSize: this.opts.maxPoolSize ?? 10,
     });

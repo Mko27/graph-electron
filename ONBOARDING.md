@@ -39,8 +39,11 @@ npm run bundle
 npm start
 ```
 
-That's it. The app opens with the legacy Neptune connection UI.
-To use the new multi-provider system, the `graph:*` IPC channels are already wired in `server/main.js`.
+That's it. The app opens on the multi-provider UI; the `graph:*` IPC channels
+are wired in `apps/electron/src/ipc/registry.ts`.
+
+If `npm start` fails on a missing Electron framework, the install skipped
+Electron's postinstall (which downloads the runtime). Run `npm rebuild electron`.
 
 ---
 
@@ -97,14 +100,13 @@ graph-client/
 │   │       ├── ipc/contracts.ts   ← request/response types for every channel
 │   │       └── constants/         ← default ports, display labels
 │   │
-│   └── db-clients/                # Thin driver wrappers (transport only)
-│       └── src/
+│   └── db-clients/                # Thin driver wrappers — UNUSED, nothing imports it
+│       └── src/                   #   (superseded by packages/core providers)
 │           ├── neptune/           # NeptuneGremlinClient
 │           ├── neo4j/             # Neo4jBoltClient
 │           └── arango/            # ArangoHttpClient
 │
-├── server/                        # Legacy JS (being migrated — do not add new code)
-├── client/                        # React source (being migrated to apps/renderer)
+├── .github/workflows/ci.yml       ← typecheck + tests + build on every push/PR
 │
 ├── ARCHITECTURE.md                ← Big picture
 ├── ONBOARDING.md                  ← This file
@@ -223,8 +225,11 @@ import type { ProviderCapabilities } from '@graph-client/core'; // capability ma
 
 ## Gotchas
 
-**"Provider system not compiled"** — Run `npm run compile`. The TypeScript provider system
-in `dist/server/` must exist before `server/main.js` can load it.
+**"Provider system not compiled"** — Run `npm run compile`, which builds
+`packages/shared`, `packages/core` and `apps/electron` into their `dist/`
+directories before `apps/electron/dist/main.js` can load them. Note that
+`npm run typecheck` and `npm test` do NOT need this: both resolve the workspace
+packages to their sources.
 
 **"No provider registered for database type X"** — `ConnectionFactory` must be instantiated
 (which triggers `bootstrap()`) before calling `ProviderRegistry.getInstance().resolve()` directly.

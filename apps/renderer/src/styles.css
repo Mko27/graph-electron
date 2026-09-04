@@ -1,3 +1,13 @@
+/* ===================================================================== */
+/* Accessibility foundations                                             */
+/*                                                                       */
+/* Font sizes are in rem against a 16px base, so the OS/browser text-size */
+/* setting scales the interface. They were fixed px, which ignored it.    */
+/* ===================================================================== */
+html {
+  font-size: 100%;
+}
+
 /* ===== CSS Variables ===== */
 :root {
   --bg-primary: #0f172a;
@@ -60,7 +70,7 @@ html, body {
 
 body {
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text-primary);
   background: var(--bg-primary);
   -webkit-font-smoothing: antialiased;
@@ -86,14 +96,31 @@ body {
   background: var(--bg-hover);
 }
 
-/* Keyboard focus is visible everywhere; the mouse path stays unchanged. */
+/* Keyboard focus is visible everywhere; the mouse path stays unchanged.
+   !important is deliberate: several base rules set `outline: none` on inputs
+   and headers, and their class selectors outrank this one — without it the
+   focus ring is silently suppressed on exactly the controls that need it. */
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent) !important;
   outline-offset: 1px;
 }
 
+/* Visually hidden, but read by screen readers and found by find-on-page.
+   The three result views are canvases, opaque to both without this. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 button:focus:not(:focus-visible) {
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
 }
 
 /* ===== Layout ===== */
@@ -132,7 +159,7 @@ button:focus:not(:focus-visible) {
   align-items: center;
   gap: 9px;
   color: var(--accent);
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
   letter-spacing: -0.3px;
   user-select: none;
@@ -184,13 +211,13 @@ button:focus:not(:focus-visible) {
   background: none;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   text-align: left;
   cursor: pointer;
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
   transition: color 0.15s;
 }
 
@@ -285,7 +312,7 @@ button:focus:not(:focus-visible) {
 /* Quiet one-liner explaining what a section configures. */
 .sb-hint {
   margin: 0 0 10px 0;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.5;
   color: var(--text-muted);
 }
@@ -300,7 +327,7 @@ button:focus:not(:focus-visible) {
   border-radius: 8px;
   background: var(--bg-tertiary);
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -319,7 +346,7 @@ button:focus:not(:focus-visible) {
 
 .form-group label {
   display: block;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   color: var(--text-secondary);
   margin-bottom: 4px;
@@ -334,9 +361,9 @@ button:focus:not(:focus-visible) {
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   transition: border-color 0.2s, box-shadow 0.2s;
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
 }
 
 .form-group input:focus {
@@ -354,7 +381,7 @@ button:focus:not(:focus-visible) {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-secondary);
 }
 
@@ -375,11 +402,11 @@ button:focus:not(:focus-visible) {
   border: none;
   border-radius: var(--radius);
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
   width: 100%;
 }
 
@@ -451,7 +478,7 @@ button:focus:not(:focus-visible) {
   margin-top: 10px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
 }
 
@@ -498,7 +525,7 @@ button:focus:not(:focus-visible) {
 }
 
 .schema-group-title {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 6px;
@@ -513,7 +540,7 @@ button:focus:not(:focus-visible) {
   padding: 3px 10px;
   margin: 2px 4px 2px 0;
   border-radius: 12px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
@@ -546,7 +573,7 @@ button:focus:not(:focus-visible) {
 
 .schema-loading {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 8px 0;
 }
 
@@ -573,7 +600,7 @@ button:focus:not(:focus-visible) {
 
 .history-item .history-query {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -582,7 +609,7 @@ button:focus:not(:focus-visible) {
 }
 
 .history-item .history-time {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -609,7 +636,7 @@ button:focus:not(:focus-visible) {
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -654,7 +681,7 @@ button:focus:not(:focus-visible) {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -686,7 +713,7 @@ button:focus:not(:focus-visible) {
   border-right: 1px solid var(--border);
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.6;
   user-select: none;
 }
@@ -711,7 +738,7 @@ button:focus:not(:focus-visible) {
   visibility: hidden;
   pointer-events: none;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.6;
 }
 
@@ -724,10 +751,10 @@ button:focus:not(:focus-visible) {
   border: none;
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.6;
   resize: none;
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
   tab-size: 2;
 }
 
@@ -741,7 +768,7 @@ button:focus:not(:focus-visible) {
   pointer-events: none;
   bottom: 10px;
   right: 16px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-muted);
   display: flex;
   align-items: center;
@@ -754,7 +781,7 @@ kbd {
   background: var(--bg-tertiary);
   border-radius: 3px;
   font-family: var(--font-sans);
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--text-secondary);
 }
 
@@ -780,7 +807,7 @@ kbd {
   align-items: center;
   justify-content: center;
   cursor: row-resize;
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
   touch-action: none;
 }
 
@@ -823,7 +850,7 @@ kbd {
   background: none;
   color: var(--text-muted);
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
@@ -840,7 +867,7 @@ kbd {
 
 .results-meta {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-muted);
   display: flex;
   gap: 16px;
@@ -867,7 +894,7 @@ kbd {
 .results-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .results-table thead {
@@ -884,7 +911,7 @@ kbd {
   text-align: left;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
@@ -894,7 +921,7 @@ kbd {
   border-bottom: 1px solid var(--border);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   max-width: 400px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -929,7 +956,7 @@ kbd {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.6;
   overflow: auto;
   white-space: pre-wrap;
@@ -974,7 +1001,7 @@ kbd {
   padding: 0 14px;
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-muted);
   flex-shrink: 0;
   user-select: none;
@@ -1000,7 +1027,7 @@ kbd {
   text-align: center;
   padding: 16px 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .empty-state-main {
@@ -1015,13 +1042,13 @@ kbd {
 }
 
 .empty-state-main h3 {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
   color: var(--text-secondary);
 }
 
 .empty-state-main p {
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 /* ===== Error Message ===== */
@@ -1032,7 +1059,7 @@ kbd {
   border: 1px solid rgba(248, 113, 113, 0.3);
   border-radius: var(--radius);
   color: var(--danger);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: var(--font-mono);
 }
 
@@ -1067,7 +1094,7 @@ kbd {
 }
 
 .node-tooltip h4 {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--accent);
   margin-bottom: 8px;
@@ -1078,7 +1105,7 @@ kbd {
   justify-content: space-between;
   gap: 12px;
   padding: 3px 0;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .node-tooltip .tooltip-key {
@@ -1099,7 +1126,7 @@ kbd {
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid var(--border);
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--text-muted);
   text-align: center;
   font-style: italic;
@@ -1132,7 +1159,7 @@ kbd {
 }
 
 .graph-detail-panel .detail-type-badge {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 700;
   letter-spacing: 0.8px;
   padding: 2px 8px;
@@ -1153,7 +1180,7 @@ kbd {
   background: none;
   border: none;
   color: var(--text-muted);
-  font-size: 18px;
+  font-size: 1.125rem;
   cursor: pointer;
   padding: 0 4px;
   line-height: 1;
@@ -1165,7 +1192,7 @@ kbd {
 }
 
 .graph-detail-panel h4 {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--accent);
   padding: 10px 14px 4px 14px;
@@ -1173,7 +1200,7 @@ kbd {
 }
 
 .graph-detail-panel .detail-section-title {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1188,7 +1215,7 @@ kbd {
   justify-content: space-between;
   gap: 12px;
   padding: 4px 14px;
-  font-size: 12px;
+  font-size: 0.75rem;
   transition: background 0.15s;
 }
 
@@ -1211,7 +1238,7 @@ kbd {
 .graph-detail-panel .detail-value {
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-align: right;
   word-break: break-all;
   white-space: normal;
@@ -1234,7 +1261,7 @@ kbd {
   border-radius: var(--radius-sm);
   color: var(--warning);
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
@@ -1316,13 +1343,13 @@ kbd {
 }
 
 .dynamo-modal-label {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .dynamo-modal-source {
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 2px 8px;
   background: rgba(251, 191, 36, 0.15);
   color: var(--warning);
@@ -1334,7 +1361,7 @@ kbd {
   background: none;
   border: none;
   color: var(--text-muted);
-  font-size: 24px;
+  font-size: 1.5rem;
   cursor: pointer;
   padding: 0 4px;
   line-height: 1;
@@ -1354,7 +1381,7 @@ kbd {
   padding: 10px 20px;
   background: var(--bg-primary);
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 0.75rem;
   flex-shrink: 0;
 }
 
@@ -1362,14 +1389,14 @@ kbd {
   color: var(--text-muted);
   font-weight: 600;
   text-transform: uppercase;
-  font-size: 10px;
+  font-size: 0.625rem;
   letter-spacing: 0.5px;
 }
 
 .dynamo-modal-id .detail-value {
   color: var(--accent);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   word-break: break-all;
   user-select: text;
   -webkit-user-select: text;
@@ -1388,7 +1415,7 @@ kbd {
   gap: 10px;
   padding: 40px 20px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .dynamo-modal-error {
@@ -1398,13 +1425,13 @@ kbd {
   border: 1px solid rgba(248, 113, 113, 0.3);
   border-radius: var(--radius);
   color: var(--danger);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .dynamo-modal-error p {
   margin-top: 6px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   opacity: 0.85;
 }
 
@@ -1416,7 +1443,7 @@ kbd {
 
 .dynamo-modal-empty strong {
   display: block;
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--text-secondary);
   margin-bottom: 8px;
 }
@@ -1426,7 +1453,7 @@ kbd {
   padding: 2px 6px;
   border-radius: 3px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--accent);
 }
 
@@ -1455,7 +1482,7 @@ kbd {
 .dynamo-attr-key {
   color: var(--text-secondary);
   font-weight: 600;
-  font-size: 12px;
+  font-size: 0.75rem;
   min-width: 140px;
   max-width: 180px;
   flex-shrink: 0;
@@ -1467,7 +1494,7 @@ kbd {
   flex: 1;
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
   word-break: break-word;
   min-width: 0;
@@ -1520,7 +1547,7 @@ kbd {
 
 .dynamo-val-object-key {
   color: var(--accent);
-  font-size: 11px;
+  font-size: 0.6875rem;
   margin-right: 6px;
 }
 
@@ -1530,7 +1557,7 @@ kbd {
 
 .dynamo-val-array-idx {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 0.625rem;
   margin-right: 6px;
 }
 
@@ -1540,7 +1567,7 @@ kbd {
   align-items: center;
   gap: 6px;
   margin-top: 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-muted);
 }
 
@@ -1601,7 +1628,7 @@ kbd {
   gap: 10px;
   padding: 10px 20px;
   border-radius: var(--radius);
-  font-size: 13px;
+  font-size: 0.8125rem;
   backdrop-filter: blur(8px);
 }
 
@@ -1677,7 +1704,7 @@ kbd {
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
   user-select: none;
   transition: all 0.15s;
@@ -1717,7 +1744,7 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .tab-name-input {
@@ -1726,10 +1753,10 @@ kbd {
   border: 1px solid var(--accent);
   border-radius: 3px;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-family: var(--font-sans);
   padding: 1px 4px;
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
   min-width: 60px;
 }
 
@@ -1753,7 +1780,7 @@ kbd {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;
@@ -1782,7 +1809,7 @@ kbd {
   border-left: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 18px;
+  font-size: 1.125rem;
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -1805,7 +1832,7 @@ kbd {
 .conn-dot.error        { background: var(--danger); }
 
 .conn-state-text {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
 }
 
@@ -1819,7 +1846,7 @@ kbd {
   padding: 4px 10px;
   border: none;
   border-radius: var(--radius-sm);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   font-family: var(--font-sans);
   cursor: pointer;
@@ -1871,7 +1898,7 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   white-space: nowrap;
 }
 
@@ -1881,10 +1908,10 @@ kbd {
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 4px 8px;
   cursor: pointer;
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
   transition: border-color 0.2s;
   max-width: 220px;
 }
@@ -1964,7 +1991,7 @@ kbd {
   height: 100%;
   width: 100%;
   padding: 0 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-secondary);
   /* The drag region the hidden caption bar used to provide. */
@@ -2009,7 +2036,7 @@ kbd {
 .toast-clear-all {
   align-self: flex-end;
   padding: 3px 10px;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-family: var(--font-sans);
   color: var(--text-secondary);
   background: var(--bg-tertiary);
@@ -2053,7 +2080,7 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   margin-top: 1px;
 }
@@ -2069,7 +2096,7 @@ kbd {
 }
 
 .toast-title {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-primary);
   line-height: 1.4;
@@ -2078,7 +2105,7 @@ kbd {
 .toast-detail {
   margin-top: 6px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.5;
   color: var(--text-secondary);
   white-space: pre-wrap;
@@ -2107,7 +2134,7 @@ kbd {
   border: none;
   padding: 0;
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   color: var(--accent);
   cursor: pointer;
@@ -2120,7 +2147,7 @@ kbd {
 
 .toast-time {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--text-muted);
 }
 
@@ -2129,7 +2156,7 @@ kbd {
   align-self: flex-start;
   background: none;
   border: none;
-  font-size: 18px;
+  font-size: 1.125rem;
   line-height: 1;
   color: var(--text-muted);
   cursor: pointer;
@@ -2155,7 +2182,7 @@ kbd {
   align-items: center;
   gap: 12px;
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .error-message-actions {
@@ -2168,7 +2195,7 @@ kbd {
 .error-message-text {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.55;
   color: var(--text-primary);
   white-space: pre-wrap;
@@ -2201,7 +2228,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
@@ -2224,7 +2251,7 @@ kbd {
   background: var(--warning-dim);
   border: 1px solid rgba(251, 191, 36, 0.35);
   border-radius: var(--radius);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--warning);
   white-space: nowrap;
   overflow: hidden;
@@ -2245,7 +2272,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-secondary);
 }
 
@@ -2279,14 +2306,14 @@ kbd {
 
 .glp-title {
   flex: 1;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .glp-hint {
   margin: 0 0 10px 0;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.45;
   color: var(--text-muted);
 }
@@ -2299,7 +2326,7 @@ kbd {
 
 .glp-group-title {
   margin: 14px 0 8px 0;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2335,7 +2362,7 @@ kbd {
 .glp-name {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -2344,7 +2371,7 @@ kbd {
 }
 
 .glp-count {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -2353,13 +2380,13 @@ kbd {
   width: 100%;
   padding: 5px 6px;
   font-family: var(--font-sans);
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   color: var(--text-primary);
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
 }
 
 .glp-row select:hover,
@@ -2369,7 +2396,7 @@ kbd {
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 /* ===================================================================== */
@@ -2447,7 +2474,7 @@ kbd {
 
 .aws-profile-note {
   margin-top: 4px;
-  font-size: 10px;
+  font-size: 0.625rem;
   line-height: 1.45;
   color: var(--text-muted);
   word-break: break-word;
@@ -2486,7 +2513,7 @@ kbd {
 .env-row-label {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -2539,7 +2566,7 @@ kbd {
 .env-editor-title {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -2557,9 +2584,9 @@ kbd {
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-family: var(--font-sans);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 600;
-  outline: none;
+  outline: none; /* replaced by the global :focus-visible ring */
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
@@ -2624,7 +2651,7 @@ kbd {
 
 .sb-section.is-nested > .sb-section-head > .sb-section-toggle {
   padding: 9px 4px 9px 10px;
-  font-size: 10.5px;
+  font-size: 0.65625rem;
 }
 
 .sb-section.is-nested > .sb-section-body > .sb-section-body-clip > .sb-section-body-inner {
@@ -2639,7 +2666,7 @@ kbd {
   border-radius: 6px;
   background: var(--bg-tertiary);
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 0.59375rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.3px;
@@ -2648,4 +2675,52 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   flex-shrink: 0;
+}
+
+/* ===================================================================== */
+/* JSON view controls                                                    */
+/* ===================================================================== */
+.json-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+}
+
+.json-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.json-copy-btn:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+
+.json-copy-btn:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.json-copy-btn.done {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.json-copy-btn.failed {
+  color: var(--danger);
+  border-color: var(--danger);
 }

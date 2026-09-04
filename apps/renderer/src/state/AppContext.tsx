@@ -58,6 +58,14 @@ export interface ConnectionObject extends ProviderConnectionDto {
   schemaLoading: boolean;
   schemaError: string | null;
   capabilities: UICapabilities;
+  /**
+   * True when the main process holds a saved credential for this connection.
+   *
+   * The credential itself is never sent here: it is written to the OS keychain
+   * by the main process and filled in on the way to the driver. This flag only
+   * tells the UI it can connect without prompting.
+   */
+  hasStoredSecret: boolean;
 }
 
 /** DynamoDB source of one environment. */
@@ -153,6 +161,7 @@ interface AppContextValue {
   setTabEnvironment: (tabId: string, environmentId: string | null) => Promise<void>;
   setTabResultView: (tabId: string, view: 'table' | 'graph' | 'json') => void;
   executeQuery: (tabId: string) => Promise<void>;
+  cancelQuery: (tabId: string) => void;
 
   // ── Misc ──
   statusMessage: { message: string; type: 'info' | 'error' };
@@ -205,16 +214,23 @@ interface AppContextValue {
 const uid = (prefix: string) =>
   `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-/** Every field of ProviderConnectionDto — the whitelist written to disk. */
+/**
+ * Non-secret fields of ProviderConnectionDto. Credentials are deliberately
+ * absent: they go to the main process once, on connect, and are never held in
+ * renderer state or written back out of it.
+ */
 const CONNECTION_DTO_KEYS = [
   'id', 'name', 'dbType', 'dialect', 'host', 'port', 'ssl',
-  'username', 'password', 'token', 'primaryKey', 'useIamAuth',
+  'username', 'useIamAuth',
   'database', 'collection', 'graphName', 'space',
   'poolMin', 'poolMax', 'connectionTimeoutMs', 'queryTimeoutMs', 'maxRetries', 'retryDelayMs',
   'traversalSource', 'region', 'profile',
 ] as const;
 
-/** Strip runtime-only fields (state, schema, capabilities…) before persisting. */
+/** Credential fields, kept out of both renderer state and the saved workspace. */
+const SECRET_KEYS = ['password', 'token', 'primaryKey'] as const;
+
+/** Strip runtime-only fields AND credentials before persisting or re-sending. */
 function toDto(conn: ConnectionObject): ProviderConnectionDto {
   const out: Record<string, unknown> = {};
   for (const key of CONNECTION_DTO_KEYS) {
@@ -222,6 +238,31 @@ function toDto(conn: ConnectionObject): ProviderConnectionDto {
     if (value !== undefined) out[key] = value;
   }
   return out as unknown as ProviderConnectionDto;
+}
+
+/** True when the config carries at least one credential. */
+function carriesSecret(dto: ProviderConnectionDto): boolean {
+  return SECRET_KEYS.some((key) => {
+    const value = (dto as unknown as Record<string, unknown>)[key];
+    return typeof value === 'string' && value !== '';
+  });
+}
+
+/** Pull just the credential fields off a connection object. */
+function pickSecrets(conn: ConnectionObject): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of SECRET_KEYS) {
+    const value = (conn as unknown as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value !== '') out[key] = value;
+  }
+  return out;
+}
+
+/** Partial update that blanks every credential field. */
+function clearedSecrets(): Partial<ConnectionObject> {
+  const out: Record<string, undefined> = {};
+  for (const key of SECRET_KEYS) out[key] = undefined;
+  return out as Partial<ConnectionObject>;
 }
 
 function capabilitiesFor(dbType: string): UICapabilities {
@@ -243,8 +284,9 @@ function makeConnection(dto: ProviderConnectionDto, overrides: Partial<Connectio
     schemaLoading: false,
     schemaError: null,
     capabilities: capabilitiesFor(dto.dbType),
+    hasStoredSecret: false,
     ...overrides,
-  };
+  } as ConnectionObject;
 }
 
 function makeTab(id: string, name: string, environmentId: string | null = null): TabObject {
@@ -295,9 +337,27 @@ function seedEnvironments(): EnvironmentObject[] {
 /**
  * Errors that mean "the link to the database is gone" rather than "your query
  * was wrong" — these get an offer to reconnect instead of a bare message.
+ *
+ * Timeouts and the bare word "closed" are deliberately NOT here: a slow query
+ * on a perfectly healthy connection was being reported as a dropped link, and
+ * the connection card turned red offering a pointless reconnect.
  */
-const CONNECTION_LOST_RE =
-  /not found — call connect|not connected|websocket|socket|econnreset|econnrefused|epipe|closed|hang ?up|timed out|timeout/i;
+const CONNECTION_LOST_RE = new RegExp(
+  [
+    'not found — call connect',
+    'not connected',
+    'connection (?:is )?(?:closed|lost|terminated)',
+    'websocket (?:is )?(?:closed|not open)',
+    'socket hang ?up',
+    'econnreset',
+    'econnrefused',
+    'enotfound',
+    'ehostunreach',
+    'epipe',
+    'server closed the connection',
+  ].join('|'),
+  'i',
+);
 
 /** How often connected endpoints are probed for a dropped link. */
 const HEALTH_POLL_MS = 30_000;
@@ -337,6 +397,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [sidebarSections, setSidebarSections] = useState<Record<string, boolean>>({});
   const [queryPanelHeight, setQueryPanelHeight] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  /** Per-tab query run token — see cancelQuery / executeQuery. */
+  const runTokensRef = useRef<Map<string, number>>(new Map());
 
   // Latest state for callbacks that must not close over a stale render (a
   // connection minted moments ago, an environment edited mid-flight).
@@ -468,9 +530,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       });
 
       try {
-        const result = await graphApi.connect(toDto(conn));
+        // Credentials the user just typed are still on the object. Send them
+        // once, then blank them in renderer state so nothing holds them for the
+        // session and no later save can carry them back out.
+        const dtoWithSecrets = { ...toDto(conn), ...pickSecrets(conn) };
+        const handedOverSecret = carriesSecret(dtoWithSecrets);
+
+        const result = await graphApi.connect(dtoWithSecrets);
         if (result.success) {
-          updateConn(id, { state: 'connected', statusText: `Connected${result.url ? ` — ${result.url}` : ''}` });
+          updateConn(id, {
+            state: 'connected',
+            statusText: `Connected${result.url ? ` — ${result.url}` : ''}`,
+            ...(handedOverSecret ? { hasStoredSecret: true } : {}),
+            ...clearedSecrets(),
+          });
           setStatusMessage({ message: `${isRetry ? 'Reconnected to' : 'Connected to'} ${conn.name}`, type: 'info' });
           if (isRetry) notify({ type: 'success', title: `Reconnected to ${conn.name}` });
           if (conn.capabilities.supportsSchema) loadSchema(id);
@@ -769,6 +842,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // ── Query execution ───────────────────────────────────────────────────────
 
+  /**
+   * Cancel the query running in a tab.
+   *
+   * The tab is freed at once and any result that arrives afterwards is
+   * discarded. Note this does NOT stop work already accepted by the database —
+   * none of the drivers in use expose a cancel — so it ends the wait, not the
+   * server-side query.
+   */
+  const cancelQuery = useCallback((tabId: string) => {
+    const token = runTokensRef.current.get(tabId);
+    if (token === undefined) return;
+
+    // Bumping the token orphans the in-flight run.
+    runTokensRef.current.set(tabId, token + 1);
+    updateTab(tabId, { isExecuting: false, error: null });
+    setStatusMessage({ message: 'Query cancelled', type: 'info' });
+    notify({
+      type: 'info',
+      title: 'Query cancelled',
+      detail:
+        'The tab is free again. The database may still be finishing the query — ' +
+        'the drivers used here have no way to call it back.',
+    });
+  }, [updateTab, notify]);
+
   const executeQuery = useCallback(async (tabId: string) => {
     const tab = tabsRef.current.find(t => t.id === tabId);
     if (!tab?.query.trim()) {
@@ -792,10 +890,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!opened) return; // openConnection already reported why.
     }
 
+    // Identifies this run; a Stop (or a later run in the same tab) increments
+    // it, and any result carrying a stale token is dropped on arrival.
+    const runToken = (runTokensRef.current.get(tabId) ?? 0) + 1;
+    runTokensRef.current.set(tabId, runToken);
+    const isCurrentRun = () => runTokensRef.current.get(tabId) === runToken;
+
     updateTab(tabId, { isExecuting: true, error: null });
     setStatusMessage({ message: `Executing on ${env.label}…`, type: 'info' });
 
     const failTab = (message: string) => {
+      if (!isCurrentRun()) return;
       updateTab(tabId, {
         error: message,
         isExecuting: false,
@@ -820,6 +925,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         query: tab.query.trim(),
         dialect: conn.dialect,
       });
+
+      // Cancelled, or superseded by a newer run in this tab.
+      if (!isCurrentRun()) return;
 
       if (result.success) {
         updateTab(tabId, {
@@ -870,9 +978,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const state = res.state;
         if (state) {
           // Endpoints first: environments and tabs reference them by id.
+          // The main process holds the credentials; it tells us only which
+          // connections have one, so the UI knows whether to prompt.
+          const withSecrets = new Set(res.connectionsWithSecrets ?? []);
+
           const restored: Record<string, ConnectionObject> = {};
           for (const dto of state.connections ?? []) {
-            restored[dto.id] = makeConnection(dto, { statusText: 'Saved — not connected' });
+            restored[dto.id] = makeConnection(dto, {
+              statusText: 'Saved — not connected',
+              hasStoredSecret: withSecrets.has(dto.id),
+            });
           }
 
           if (Object.keys(restored).length > 0) {
@@ -987,12 +1102,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(timer);
   }, [hydrated, serializeWorkspace]);
 
-  // Last-chance flush on window close, for edits made inside the debounce window.
+  /**
+   * Last-chance flush for edits made inside the debounce window.
+   *
+   * `beforeunload` cannot await, so firing an async save from it never
+   * completed — the window was gone first, and the last edit was lost. Saving
+   * on every visibility change and blur instead means the work is already on
+   * disk by the time a close begins; `beforeunload` stays as a final nudge.
+   */
   useEffect(() => {
     if (!hydrated) return;
-    const flush = () => { graphApi.workspaceSave(serializeRef.current()).catch(() => undefined); };
+
+    const flush = () => { void graphApi.workspaceSave(serializeRef.current()).catch(() => undefined); };
+
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('blur', flush);
     window.addEventListener('beforeunload', flush);
-    return () => window.removeEventListener('beforeunload', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('blur', flush);
+      window.removeEventListener('beforeunload', flush);
+      // Unmount is also a close: get the current state down.
+      flush();
+    };
   }, [hydrated]);
 
   // ── Derived tab state ─────────────────────────────────────────────────────
@@ -1070,7 +1204,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; clearInterval(timer); };
   }, [connectedIds, updateConn, notify, openConnection]);
 
-  const value: AppContextValue = {
+  /**
+   * Memoised so the provider does not hand every consumer a new object on each
+   * render. Without this, any state change anywhere re-rendered the whole tree
+   * — including the canvas graph views — on every keystroke.
+   */
+  const value: AppContextValue = useMemo(() => ({
     environments,
     configuredEnvironments,
     selectedEnvironmentId,
@@ -1102,6 +1241,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setTabEnvironment,
     setTabResultView,
     executeQuery,
+    cancelQuery,
     statusMessage,
     setStatusMessage,
     notifications,
@@ -1124,7 +1264,62 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     queryPanelHeight,
     setQueryPanelHeight,
     hydrated,
-  };
+  }), [
+    environments,
+    configuredEnvironments,
+    selectedEnvironmentId,
+    setSelectedEnvironmentId,
+    addEnvironment,
+    removeEnvironment,
+    renameEnvironment,
+    updateEnvironmentGraph,
+    updateEnvironmentDynamo,
+    applyEnvironmentDynamo,
+    connectEnvironment,
+    reconnectEnvironment,
+    disconnectEnvironment,
+    envConnection,
+    isEnvironmentConfigured,
+    connections,
+    loadSchema,
+    reconnectConnection,
+    queryTabs,
+    activeTabId,
+    activeTab,
+    activeTabEnvironment,
+    activeTabConnection,
+    setActiveTabId,
+    addTab,
+    closeTab,
+    renameTab,
+    setTabQuery,
+    setTabEnvironment,
+    setTabResultView,
+    executeQuery,
+    cancelQuery,
+    statusMessage,
+    setStatusMessage,
+    notifications,
+    notify,
+    dismissNotification,
+    clearNotifications,
+    dynamoRuntime,
+    handleFetchDynamoItem,
+    hydrateVertexProperties,
+    hydrateEdgeProperties,
+    graphLabelProperty,
+    setGraphLabelProperty,
+    graphLabelModes,
+    setGraphLabelMode,
+    graphEdgeLabelModes,
+    setGraphEdgeLabelMode,
+    resetGraphLabelModes,
+    sidebarSections,
+    setSidebarSection,
+    queryPanelHeight,
+    setQueryPanelHeight,
+    hydrated,
+  ]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

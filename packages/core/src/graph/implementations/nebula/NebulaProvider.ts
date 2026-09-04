@@ -112,7 +112,9 @@ export class NebulaProvider extends BaseProvider {
     if (!this.session) throw new Error('Not connected to NebulaGraph');
     const start = Date.now();
 
-    return this.withRetry(async () => {
+    this.validateQuery(query, dialect);
+
+    return this.withQueryRetry(query, dialect, async () => {
       const rows = await this._exec(query);
       return { success: true, data: rows as T[], duration: Date.now() - start, count: rows.length };
     }, 'NebulaGraph query');
