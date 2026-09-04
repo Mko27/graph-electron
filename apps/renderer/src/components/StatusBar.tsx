@@ -1,18 +1,19 @@
 /**
- * StatusBar — global status message, active DynamoDB environment, and
- * active-tab result metadata.
+ * StatusBar — global status message, the active tab's environment, and that
+ * tab's result metadata.
  *
- * The message keeps its full text in a tooltip, since a long provider error is
- * otherwise clipped by the bar's width. The environment chip is always visible
- * so it is never ambiguous which DynamoDB table enrichment is reading from.
+ * The environment chip carries both halves (graph state + DynamoDB table) so it
+ * is never ambiguous which stage a result came from, and a table that the main
+ * process has not accepted yet is shown as pending rather than authoritative.
  */
 
 import { useApp } from '../state/AppContext';
 
 export function StatusBar() {
-  const { statusMessage, activeTab, activeTabConnection, dynamo } = useApp();
+  const { statusMessage, activeTab, activeTabEnvironment, activeTabConnection, dynamoRuntime } = useApp();
   const result = activeTab?.result;
-  const env = dynamo.environments[dynamo.environment];
+  const env = activeTabEnvironment;
+  const dynamoLive = env != null && dynamoRuntime.envId === env.id;
 
   return (
     <div id="statusBar">
@@ -26,21 +27,21 @@ export function StatusBar() {
       </div>
       <div className="status-right">
         {env && (
-          <span
-            className={`status-env env-${dynamo.environment} ${dynamo.applied ? 'applied' : 'pending'}`}
-            title={
-              dynamo.applied
-                ? `DynamoDB: ${dynamo.statusText}`
-                : `DynamoDB config not applied — ${dynamo.statusText}`
-            }
-          >
-            {env.label}: {env.tableName}
+          <span title={activeTabConnection?.statusText ?? 'No endpoint configured'}>
+            <span className={`status-conn-dot ${activeTabConnection?.state ?? 'disconnected'}`} />
+            {env.label}
           </span>
         )}
-        {activeTabConnection && (
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }} title={activeTabConnection.statusText}>
-            <span className={`status-conn-dot ${activeTabConnection.state}`} />
-            {activeTabConnection.name}
+        {env && env.dynamo.tableName && (
+          <span
+            className={`status-env ${dynamoLive && dynamoRuntime.applied ? 'applied' : 'pending'}`}
+            title={
+              dynamoLive
+                ? `DynamoDB: ${dynamoRuntime.statusText}`
+                : `DynamoDB config not applied — ${dynamoRuntime.statusText}`
+            }
+          >
+            {env.dynamo.tableName}
           </span>
         )}
         {result && (

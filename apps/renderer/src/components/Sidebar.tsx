@@ -1,27 +1,72 @@
 /**
- * Sidebar — connection manager, schema explorer, history, quick queries.
+ * Sidebar — one headline configuration section plus the query helpers, each one
+ * collapsible.
  *
- * Architecture fixes vs legacy:
- *   ✅ AddConnectionForm uses ProviderConnectionDto (all 9 db types)
- *   ✅ Dialect selector filtered by DIALECT_COMPATIBILITY[dbType]
- *   ✅ Quick queries generated from active connection's dialect (no hard-coded Gremlin)
+ *   ENVIRONMENTS   — graph endpoint + DynamoDB source per environment (see
+ *                    EnvironmentsSection); tabs pick from the configured ones
+ *   SCHEMA         — labels of the active tab's environment
+ *   HISTORY        — queries run in the active tab
+ *   QUICK QUERIES  — dialect-aware starters
+ *
+ * The helpers all describe the *active tab's* environment, so the sidebar never
+ * shows a schema or dialect belonging to something the tab is not querying.
+ * Every section's open/closed state is persisted with the workspace.
+ *
+ * Architecture rules:
+ *   ✅ Endpoints are ProviderConnectionDto (all 9 database types)
+ *   ✅ Quick queries generated from the active connection's dialect
  *   ✅ Schema explorer gated on connection.capabilities.supportsSchema
- *   ✅ Schema tags use new VertexSchemaDto shape (.label field)
  *   ✅ Schema insert query adapts to dialect (Gremlin vs Cypher)
  */
 
-import { useState, useCallback } from 'react';
 import { useApp } from '../state/AppContext';
-import {
-  DB_TYPE_LABELS,
-  DIALECT_LABELS,
-  DIALECT_COMPATIBILITY,
-  DEFAULT_PORTS,
-  DYNAMO_ENVIRONMENT_ORDER,
-} from '@graph-client/shared';
-import type { ProviderConnectionDto } from '@graph-client/shared';
-import type { ConnectionObject } from '../state/AppContext';
-import { AwsProfileSelect } from './AwsProfileSelect';
+import { DB_TYPE_LABELS, DIALECT_LABELS } from '@graph-client/shared';
+import { CollapsibleSection } from './CollapsibleSection';
+import { EnvironmentsSection } from './EnvironmentsSection';
+import { hostPlatform } from '../api/graphApi';
+
+// ── Section ids (persistence keys — renaming resets a section to its default) ─
+
+const SECTION_SCHEMA  = 'schema';
+const SECTION_HISTORY = 'history';
+const SECTION_QUICK   = 'quick-queries';
+
+// ── Icons ─────────────────────────────────────────────────────────────────────
+
+const svgProps = {
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 2,
+  strokeLinecap: 'round' as const,
+  strokeLinejoin: 'round' as const,
+};
+
+const IconSchema = (
+  <svg width="15" height="15" {...svgProps}>
+    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+  </svg>
+);
+
+const IconClock = (
+  <svg width="15" height="15" {...svgProps}>
+    <circle cx="12" cy="12" r="10" />
+    <polyline points="12 6 12 12 16 14" />
+  </svg>
+);
+
+const IconBolt = (
+  <svg width="15" height="15" {...svgProps}>
+    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+  </svg>
+);
+
+const IconRefresh = (
+  <svg width="13" height="13" {...svgProps} strokeWidth={2.5}>
+    <polyline points="23 4 23 10 17 10" />
+    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+  </svg>
+);
 
 // ── Quick query templates by dialect ─────────────────────────────────────────
 
@@ -52,7 +97,7 @@ const QUICK_QUERIES: Record<string, Array<{ label: string; query: string }>> = {
     { label: 'Schema',             query: 'CALL db.schema.visualization()' },
   ],
   gsql: [
-    { label: 'All Vertices',  query: 'SELECT * FROM VertexType' },
+    { label: 'All Vertices',   query: 'SELECT * FROM VertexType' },
     { label: 'Count Vertices', query: 'SELECT count(*) FROM VertexType' },
   ],
   ngql: [
@@ -69,455 +114,22 @@ const QUICK_QUERIES: Record<string, Array<{ label: string; query: string }>> = {
   ],
 };
 
-// ── DB-type specific form fields ──────────────────────────────────────────────
+// ── Schema explorer ───────────────────────────────────────────────────────────
 
-function DbSpecificFields({
-  dbType,
-  form,
-  setForm,
-}: {
-  dbType: string;
-  form: Record<string, string | boolean>;
-  setForm: (f: Record<string, string | boolean>) => void;
-}) {
-  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm({ ...form, [k]: e.target.value });
+function SchemaSection() {
+  const { activeTabEnvironment, activeTabConnection, loadSchema, setTabQuery, activeTabId } = useApp();
 
-  switch (dbType) {
-    case 'neptune':
-      return (
-        <>
-          <div className="form-group">
-            <label>AWS Region (optional)</label>
-            <input type="text" placeholder="us-east-1" value={String(form.region ?? '')} onChange={set('region')} />
-          </div>
-          <div className="form-group checkbox-group">
-            <label>
-              <input
-                type="checkbox"
-                checked={form.useIamAuth !== false}
-                onChange={e => setForm({ ...form, useIamAuth: e.target.checked })}
-              />
-              <span>Use IAM Auth (SigV4)</span>
-            </label>
-          </div>
-          <AwsProfileSelect
-            value={String(form.profile ?? '')}
-            onChange={profile => setForm({ ...form, profile })}
-          />
-        </>
-      );
+  const env  = activeTabEnvironment;
+  const conn = activeTabConnection;
 
-    case 'neo4j':
-    case 'orientdb':
-    case 'nebula':
-      return (
-        <>
-          <div className="form-group">
-            <label>Username</label>
-            <input type="text" placeholder="neo4j" value={String(form.username ?? '')} onChange={set('username')} />
-          </div>
-          <div className="form-group">
-            <label>Password</label>
-            <input type="password" placeholder="••••••••" value={String(form.password ?? '')} onChange={set('password')} />
-          </div>
-          {dbType === 'neo4j' && (
-            <div className="form-group">
-              <label>Database (optional)</label>
-              <input type="text" placeholder="neo4j" value={String(form.database ?? '')} onChange={set('database')} />
-            </div>
-          )}
-          {dbType === 'nebula' && (
-            <div className="form-group">
-              <label>Space (optional)</label>
-              <input type="text" placeholder="my_space" value={String(form.space ?? '')} onChange={set('space')} />
-            </div>
-          )}
-        </>
-      );
+  const connected = conn?.state === 'connected';
+  const supported = conn?.capabilities.supportsSchema ?? false;
+  const schema    = conn?.schema ?? null;
+  const vertices  = schema?.vertexLabels ?? [];
+  const edges     = schema?.edgeLabels ?? [];
 
-    case 'arangodb':
-      return (
-        <>
-          <div className="form-group">
-            <label>Username (optional)</label>
-            <input type="text" placeholder="root" value={String(form.username ?? '')} onChange={set('username')} />
-          </div>
-          <div className="form-group">
-            <label>Password (optional)</label>
-            <input type="password" placeholder="••••••••" value={String(form.password ?? '')} onChange={set('password')} />
-          </div>
-          <div className="form-group">
-            <label>Database (optional)</label>
-            <input type="text" placeholder="_system" value={String(form.database ?? '')} onChange={set('database')} />
-          </div>
-        </>
-      );
-
-    case 'cosmosdb':
-      return (
-        <>
-          <div className="form-group">
-            <label>Primary Key</label>
-            <input type="password" placeholder="Azure primary key" value={String(form.primaryKey ?? '')} onChange={set('primaryKey')} />
-          </div>
-          <div className="form-group">
-            <label>Database</label>
-            <input type="text" placeholder="mydb" value={String(form.database ?? '')} onChange={set('database')} />
-          </div>
-          <div className="form-group">
-            <label>Collection</label>
-            <input type="text" placeholder="mygraph" value={String(form.collection ?? '')} onChange={set('collection')} />
-          </div>
-        </>
-      );
-
-    case 'tigergraph':
-      return (
-        <>
-          <div className="form-group">
-            <label>Graph Name (optional)</label>
-            <input type="text" placeholder="MyGraph" value={String(form.graphName ?? '')} onChange={set('graphName')} />
-          </div>
-          <div className="form-group">
-            <label>Bearer Token (optional)</label>
-            <input type="password" placeholder="token" value={String(form.token ?? '')} onChange={set('token')} />
-          </div>
-        </>
-      );
-
-    default:
-      return null;
-  }
-}
-
-// ── Add Connection Form ───────────────────────────────────────────────────────
-
-function AddConnectionForm({ onAdd, onCancel }: { onAdd: (dto: ProviderConnectionDto) => Promise<void>; onCancel: () => void }) {
-  const [dbType, setDbType] = useState('neptune');
-  const dialects = DIALECT_COMPATIBILITY[dbType] ?? ['gremlin'];
-  const [dialect, setDialect] = useState(dialects[0]);
-  const [name, setName] = useState('');
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState(String(DEFAULT_PORTS['neptune'] ?? 8182));
-  const [ssl, setSsl] = useState(true);
-  const [extra, setExtra] = useState<Record<string, string | boolean>>({});
-  const [busy, setBusy] = useState(false);
-
-  const handleDbTypeChange = (t: string) => {
-    setDbType(t);
-    const newDialects = DIALECT_COMPATIBILITY[t] ?? ['gremlin'];
-    setDialect(newDialects[0]);
-    setPort(String(DEFAULT_PORTS[t] ?? 8182));
-    setExtra({});
-  };
-
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!host.trim()) return;
-    setBusy(true);
-    const dto: ProviderConnectionDto = {
-      id: `conn_${Date.now()}`,
-      name: name.trim() || host.split('.')[0] || dbType,
-      dbType,
-      dialect,
-      host: host.trim(),
-      port: parseInt(port, 10) || DEFAULT_PORTS[dbType] || 8182,
-      ssl,
-      ...extra,
-    };
-    await onAdd(dto);
-    setBusy(false);
-  };
-
-  return (
-    <form className="add-conn-form" onSubmit={onSubmit}>
-      <div className="form-group">
-        <label>Database Type</label>
-        <select value={dbType} onChange={e => handleDbTypeChange(e.target.value)} className="conn-select" style={{ width: '100%' }}>
-          {Object.entries(DB_TYPE_LABELS).map(([k, v]) => (
-            <option key={k} value={k}>{v}</option>
-          ))}
-        </select>
-      </div>
-      <div className="form-group">
-        <label>Dialect</label>
-        <select value={dialect} onChange={e => setDialect(e.target.value)} className="conn-select" style={{ width: '100%' }}>
-          {dialects.map(d => (
-            <option key={d} value={d}>{DIALECT_LABELS[d] ?? d}</option>
-          ))}
-        </select>
-      </div>
-      <div className="form-group">
-        <label>Name (optional)</label>
-        <input type="text" placeholder="Production" value={name} onChange={e => setName(e.target.value)} />
-      </div>
-      <div className="form-group">
-        <label>Host</label>
-        <input
-          type="text"
-          placeholder={dbType === 'neptune' ? 'cluster.region.neptune.amazonaws.com' : 'localhost'}
-          value={host}
-          onChange={e => setHost(e.target.value)}
-          required
-          autoFocus
-        />
-      </div>
-      <div className="form-row">
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>Port</label>
-          <input type="number" value={port} onChange={e => setPort(e.target.value)} />
-        </div>
-        <div className="form-group checkbox-group" style={{ paddingTop: 20 }}>
-          <label>
-            <input type="checkbox" checked={ssl} onChange={e => setSsl(e.target.checked)} />
-            <span>SSL</span>
-          </label>
-        </div>
-      </div>
-      <DbSpecificFields dbType={dbType} form={extra} setForm={setExtra} />
-      <div className="form-row" style={{ gap: 8 }}>
-        <button type="submit" className="btn btn-primary" style={{ flex: 1 }} disabled={busy}>
-          {busy ? 'Connecting…' : 'Add & Connect'}
-        </button>
-        <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
-      </div>
-    </form>
-  );
-}
-
-// ── Connection Card ───────────────────────────────────────────────────────────
-
-function ConnectionCard({
-  conn, isActive, onSelect, onConnect, onReconnect, onDisconnect, onRemove,
-}: {
-  conn: ConnectionObject;
-  isActive: boolean;
-  onSelect: () => void;
-  onConnect: () => void;
-  onReconnect: () => void;
-  onDisconnect: () => void;
-  onRemove: () => void;
-}) {
-  const isConnected  = conn.state === 'connected';
-  const isConnecting = conn.state === 'connecting';
-  const isError      = conn.state === 'error';
-
-  return (
-    <div className={`conn-card ${isActive ? 'active' : ''}`} onClick={onSelect}>
-      <div className="conn-card-header">
-        <span className={`conn-dot ${conn.state}`} />
-        <span className="conn-name">{conn.name}</span>
-        {!isConnecting && (
-          <button
-            className="btn-icon conn-reconnect-btn"
-            title={isConnected ? 'Reconnect (drop and re-open this connection)' : 'Retry connection'}
-            onClick={e => { e.stopPropagation(); onReconnect(); }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <polyline points="23 4 23 10 17 10"/>
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-          </button>
-        )}
-        <button
-          className="btn-icon conn-remove-btn"
-          title="Remove connection"
-          onClick={e => { e.stopPropagation(); onRemove(); }}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-      </div>
-      <div className="conn-endpoint">{conn.host}:{conn.port} — {DB_TYPE_LABELS[conn.dbType] ?? conn.dbType}</div>
-      <div className="conn-card-footer">
-        <span className={`conn-state-text ${conn.state}`} title={conn.statusText}>{conn.statusText}</span>
-        {!isConnected && !isConnecting ? (
-          <button className="btn-sm btn-primary-sm" onClick={e => { e.stopPropagation(); onConnect(); }}>
-            {isError ? 'Retry' : 'Connect'}
-          </button>
-        ) : isConnected ? (
-          <button className="btn-sm btn-danger-sm" onClick={e => { e.stopPropagation(); onDisconnect(); }}>Disconnect</button>
-        ) : (
-          <span className="conn-connecting-spinner">
-            <span className="loading-spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
-          </span>
-        )}
-      </div>
-      {isError && <div className="conn-error-text" title={conn.statusText}>{conn.statusText}</div>}
-    </div>
-  );
-}
-
-function ConnectionsPanel() {
-  const {
-    connections, activeConnectionId, setActiveConnectionId,
-    addConnection, connectConnection, reconnectConnection, disconnectConnection, removeConnection,
-  } = useApp();
-
-  const [showForm, setShowForm] = useState(false);
-  const connList = Object.values(connections);
-
-  const handleAdd = useCallback(async (dto: ProviderConnectionDto) => {
-    const id = addConnection(dto);
-    setShowForm(false);
-    await connectConnection(id);
-  }, [addConnection, connectConnection]);
-
-  return (
-    <div className="sidebar-section">
-      <div className="section-title">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-          <polyline points="22,6 12,13 2,6"/>
-        </svg>
-        Connections
-        <button className="btn-icon" title="Add connection" style={{ marginLeft: 'auto' }} onClick={() => setShowForm(v => !v)}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-        </button>
-      </div>
-      {showForm && <AddConnectionForm onAdd={handleAdd} onCancel={() => setShowForm(false)} />}
-      {connList.length === 0 && !showForm && (
-        <div className="empty-state" style={{ paddingBottom: 8 }}>
-          No connections yet.{' '}
-          <button className="link-btn" onClick={() => setShowForm(true)}>Add one</button>
-        </div>
-      )}
-      <div className="conn-list">
-        {connList.map(conn => (
-          <ConnectionCard
-            key={conn.id}
-            conn={conn}
-            isActive={conn.id === activeConnectionId}
-            onSelect={() => setActiveConnectionId(conn.id)}
-            onConnect={() => connectConnection(conn.id)}
-            onReconnect={() => reconnectConnection(conn.id)}
-            onDisconnect={() => disconnectConnection(conn.id)}
-            onRemove={() => removeConnection(conn.id)}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── DynamoDB Environment ──────────────────────────────────────────────────────
-
-/**
- * Each environment (local / stage / plive) carries its own table, region,
- * endpoint and AWS profile. Switching the selector re-points enrichment lookups
- * at that environment immediately; the fields below edit the selected
- * environment and are persisted with the workspace.
- */
-function DynamoConfig() {
-  const { dynamo, setDynamoEnvironment, updateDynamoEnvironment, applyDynamoConfig } = useApp();
-
-  const envIds = [
-    ...DYNAMO_ENVIRONMENT_ORDER.filter(id => dynamo.environments[id]),
-    ...Object.keys(dynamo.environments).filter(
-      id => !(DYNAMO_ENVIRONMENT_ORDER as readonly string[]).includes(id),
-    ),
-  ];
-  const activeId = dynamo.environment;
-  const env = dynamo.environments[activeId];
-  const [busy, setBusy] = useState(false);
-
-  if (!env) return null;
-
-  const set = (field: 'region' | 'tableName' | 'endpoint' | 'profile') =>
-    (e: React.ChangeEvent<HTMLInputElement>) =>
-      updateDynamoEnvironment(activeId, { [field]: e.target.value });
-
-  const onSwitch = async (nextId: string) => {
-    setBusy(true);
-    await setDynamoEnvironment(nextId);
-    setBusy(false);
-  };
-
-  const onApply = async () => {
-    setBusy(true);
-    await applyDynamoConfig();
-    setBusy(false);
-  };
-
-  return (
-    <div className="sidebar-section">
-      <div className="section-title">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <ellipse cx="12" cy="5" rx="9" ry="3"/>
-          <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
-          <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
-        </svg>
-        DynamoDB Source
-        <span className={`section-badge env-badge env-${activeId}`}>{env.label}</span>
-      </div>
-      <div className="connection-form">
-        <div className="form-group">
-          <label>Environment</label>
-          <select
-            className="conn-select"
-            style={{ width: '100%' }}
-            value={activeId}
-            disabled={busy}
-            onChange={e => { void onSwitch(e.target.value); }}
-            title="Each environment points at its own DynamoDB table"
-          >
-            {envIds.map(id => (
-              <option key={id} value={id}>{dynamo.environments[id].label}</option>
-            ))}
-          </select>
-        </div>
-        <div className="form-group">
-          <label>Table Name</label>
-          <input type="text" placeholder="blocks" value={env.tableName} onChange={set('tableName')} />
-        </div>
-        <div className="form-group">
-          <label>AWS Region</label>
-          <input type="text" placeholder="us-east-1" value={env.region} onChange={set('region')} />
-        </div>
-        <div className="form-group">
-          <label>Endpoint <span className="form-hint">(blank = real AWS)</span></label>
-          <input type="text" placeholder="http://localhost:8000" value={env.endpoint} onChange={set('endpoint')} />
-        </div>
-        <AwsProfileSelect
-          value={env.profile ?? ''}
-          onChange={profile => updateDynamoEnvironment(activeId, { profile })}
-        />
-        <button className="btn btn-ghost" style={{ width: '100%' }} onClick={() => { void onApply(); }} disabled={busy}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-          </svg>
-          {busy ? 'Applying…' : 'Apply Config'}
-        </button>
-        <div
-          className={`dynamo-config-status ${dynamo.applied ? 'applied' : 'pending'}`}
-          style={{ display: 'flex' }}
-          title={dynamo.statusText}
-        >
-          <span className="dynamo-dot" />
-          <span>{dynamo.statusText}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Schema Explorer ───────────────────────────────────────────────────────────
-
-function SchemaExplorer() {
-  const { connections, activeConnectionId, loadSchema, setTabQuery, activeTabId } = useApp();
-  const conn = activeConnectionId ? connections[activeConnectionId] : null;
-
-  if (!conn || conn.state !== 'connected') return null;
-  if (!conn.capabilities.supportsSchema) return null;
-
-  const { schema, schemaLoading, schemaError } = conn;
-
-  const isGremlin = conn.dialect === 'gremlin';
-  const isCypher  = conn.dialect === 'cypher' || conn.dialect === 'opencypher';
+  const isGremlin = conn?.dialect === 'gremlin';
+  const isCypher  = conn?.dialect === 'cypher' || conn?.dialect === 'opencypher';
 
   const insertVertexQuery = (label: string) => {
     if (isGremlin) setTabQuery(activeTabId, `g.V().hasLabel('${label}').limit(25)`);
@@ -529,75 +141,103 @@ function SchemaExplorer() {
     else if (isCypher) setTabQuery(activeTabId, `MATCH ()-[r:${label}]->() RETURN r LIMIT 25`);
   };
 
+  const summary = schema && (vertices.length > 0 || edges.length > 0)
+    ? <span className="sb-chip">{vertices.length} V · {edges.length} E</span>
+    : env
+      ? <span className="sb-chip">{env.label}</span>
+      : undefined;
+
   return (
-    <div className="sidebar-section">
-      <div className="section-title">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-        </svg>
-        Schema — {conn.name}
-        <button className="btn-icon" title="Refresh" onClick={() => loadSchema(conn.id)} style={{ marginLeft: 'auto' }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="23 4 23 10 17 10"/>
-            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-          </svg>
+    <CollapsibleSection
+      id={SECTION_SCHEMA}
+      title="Schema"
+      icon={IconSchema}
+      defaultOpen={false}
+      summary={summary}
+      actions={conn && connected && supported ? (
+        <button className="btn-icon" title="Reload schema" onClick={() => loadSchema(conn.id)}>
+          {IconRefresh}
         </button>
-      </div>
-      <div className="schema-content">
-        {schemaLoading && <div className="schema-loading"><span className="loading-spinner" /> Loading…</div>}
-        {schemaError && <div className="schema-loading" style={{ color: 'var(--danger)' }}>Failed: {schemaError}</div>}
-        {schema && !schemaLoading && (
-          <>
-            {(schema.vertexLabels?.length ?? 0) > 0 && (
-              <div className="schema-group">
-                <div className="schema-group-title">Vertices ({schema.vertexLabels!.length})</div>
-                <div>
-                  {schema.vertexLabels!.map(v => (
-                    <span key={v.label} className="schema-tag vertex" onClick={() => insertVertexQuery(v.label)}>
-                      {v.label}
-                    </span>
-                  ))}
+      ) : undefined}
+    >
+      {!env && <div className="empty-state">This tab has no environment yet.</div>}
+      {env && !conn && (
+        <div className="empty-state"><strong>{env.label}</strong> has no endpoint yet.</div>
+      )}
+      {env && conn && !connected && (
+        <div className="empty-state">Connect <strong>{env.label}</strong> to load its labels.</div>
+      )}
+      {conn && connected && !supported && (
+        <div className="empty-state">
+          {DB_TYPE_LABELS[conn.dbType] ?? conn.dbType} does not expose a schema.
+        </div>
+      )}
+      {conn && connected && supported && (
+        <div className="schema-content">
+          {conn.schemaLoading && <div className="schema-loading"><span className="loading-spinner" /> Loading…</div>}
+          {conn.schemaError && (
+            <div className="schema-loading" style={{ color: 'var(--danger)' }}>Failed: {conn.schemaError}</div>
+          )}
+          {schema && !conn.schemaLoading && (
+            <>
+              {vertices.length > 0 && (
+                <div className="schema-group">
+                  <div className="schema-group-title">Vertices ({vertices.length})</div>
+                  <div>
+                    {vertices.map(v => (
+                      <span key={v.label} className="schema-tag vertex" onClick={() => insertVertexQuery(v.label)}>
+                        {v.label}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
-            {(schema.edgeLabels?.length ?? 0) > 0 && (
-              <div className="schema-group">
-                <div className="schema-group-title">Edges ({schema.edgeLabels!.length})</div>
-                <div>
-                  {schema.edgeLabels!.map(e => (
-                    <span key={e.label} className="schema-tag edge" onClick={() => insertEdgeQuery(e.label)}>
-                      {e.label}
-                    </span>
-                  ))}
+              )}
+              {edges.length > 0 && (
+                <div className="schema-group">
+                  <div className="schema-group-title">Edges ({edges.length})</div>
+                  <div>
+                    {edges.map(e => (
+                      <span key={e.label} className="schema-tag edge" onClick={() => insertEdgeQuery(e.label)}>
+                        {e.label}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
-            {!schema.vertexLabels?.length && !schema.edgeLabels?.length && (
-              <div className="schema-loading">No schema data. Click refresh.</div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+              )}
+              {vertices.length === 0 && edges.length === 0 && (
+                <div className="schema-loading">No schema data. Click reload.</div>
+              )}
+            </>
+          )}
+          {!schema && !conn.schemaLoading && !conn.schemaError && (
+            <div className="empty-state">
+              <button className="link-btn" onClick={() => loadSchema(conn.id)}>Load schema</button>
+            </div>
+          )}
+        </div>
+      )}
+    </CollapsibleSection>
   );
 }
 
-// ── Query History ─────────────────────────────────────────────────────────────
+// ── Query history ─────────────────────────────────────────────────────────────
 
-function QueryHistoryPanel() {
+function HistorySection() {
   const { activeTab, setTabQuery, activeTabId } = useApp();
   const history = activeTab?.history ?? [];
 
   return (
-    <div className="sidebar-section">
-      <div className="section-title">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="10"/>
-          <polyline points="12 6 12 12 16 14"/>
-        </svg>
-        History
-        {activeTab && <span className="section-badge">{activeTab.name}</span>}
-      </div>
+    <CollapsibleSection
+      id={SECTION_HISTORY}
+      title="History"
+      icon={IconClock}
+      defaultOpen={false}
+      summary={
+        <span className="sb-chip">
+          {activeTab ? `${activeTab.name} · ${history.length}` : String(history.length)}
+        </span>
+      }
+    >
       <div className="query-history">
         {history.length === 0 ? (
           <div className="empty-state">No queries yet</div>
@@ -606,6 +246,7 @@ function QueryHistoryPanel() {
             <div
               key={i}
               className={`history-item ${item.success ? 'success' : 'error'}`}
+              title={item.query}
               onClick={() => setTabQuery(activeTabId, item.query)}
             >
               <span className="history-query">{item.query}</span>
@@ -614,28 +255,25 @@ function QueryHistoryPanel() {
           ))
         )}
       </div>
-    </div>
+    </CollapsibleSection>
   );
 }
 
-// ── Quick Queries ─────────────────────────────────────────────────────────────
+// ── Quick queries ─────────────────────────────────────────────────────────────
 
-function QuickQueryPanel() {
+function QuickQuerySection() {
   const { setTabQuery, activeTabId, activeTabConnection } = useApp();
   const dialect = activeTabConnection?.dialect ?? 'gremlin';
   const queries = QUICK_QUERIES[dialect] ?? QUICK_QUERIES['gremlin'];
 
   return (
-    <div className="sidebar-section">
-      <div className="section-title">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-        </svg>
-        Quick Queries
-        {activeTabConnection && (
-          <span className="section-badge">{DIALECT_LABELS[dialect] ?? dialect}</span>
-        )}
-      </div>
+    <CollapsibleSection
+      id={SECTION_QUICK}
+      title="Quick Queries"
+      icon={IconBolt}
+      defaultOpen={false}
+      summary={<span className="sb-chip">{DIALECT_LABELS[dialect] ?? dialect}</span>}
+    >
       <div className="quick-queries">
         {queries.map((q, i) => (
           <button key={i} className="quick-query-btn" onClick={() => setTabQuery(activeTabId, q.query)}>
@@ -643,18 +281,23 @@ function QuickQueryPanel() {
           </button>
         ))}
       </div>
-    </div>
+    </CollapsibleSection>
   );
 }
 
 // ── Sidebar (main export) ─────────────────────────────────────────────────────
 
 export function Sidebar() {
+  // On Windows the title bar already carries the wordmark (see TitleBar), so
+  // repeating it here would just be a second "Graph Client" two rows down.
+  const showWordmark = hostPlatform !== 'win32';
+
   return (
     <aside id="sidebar">
+      {showWordmark && (
       <div className="sidebar-header">
         <div className="logo">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="12" cy="12" r="3"/>
             <circle cx="4" cy="6" r="2"/><circle cx="20" cy="6" r="2"/>
             <circle cx="4" cy="18" r="2"/><circle cx="20" cy="18" r="2"/>
@@ -664,11 +307,13 @@ export function Sidebar() {
           <span>Graph Client</span>
         </div>
       </div>
-      <ConnectionsPanel />
-      <DynamoConfig />
-      <SchemaExplorer />
-      <QueryHistoryPanel />
-      <QuickQueryPanel />
+      )}
+      <div className="sidebar-sections">
+        <EnvironmentsSection />
+        <SchemaSection />
+        <HistorySection />
+        <QuickQuerySection />
+      </div>
     </aside>
   );
 }

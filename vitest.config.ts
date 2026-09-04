@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: [
       'apps/electron/src/**/__tests__/**/*.test.ts',
+      'apps/renderer/src/**/__tests__/**/*.test.ts',
       'packages/shared/src/**/__tests__/**/*.test.ts',
     ],
     environment: 'node',

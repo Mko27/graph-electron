@@ -214,9 +214,27 @@ export interface PersistedTab {
   id: string;
   name: string;
   query: string;
+  /**
+   * Environment this tab queries. Older workspaces only carry `connectionId`;
+   * the renderer maps that to the environment that owns the connection.
+   */
+  environmentId?: string | null;
   connectionId: string | null;
   activeResultTab: 'table' | 'graph' | 'json';
   history: Array<{ query: string; success: boolean; timestamp: string }>;
+}
+
+/**
+ * An environment pairs one graph endpoint with one DynamoDB source, so picking
+ * "Stage" in a query tab points both at stage and they cannot drift apart.
+ * `connectionId` indexes into WorkspaceState.connections (where secrets are
+ * encrypted separately); null means the environment has no endpoint yet.
+ */
+export interface PersistedEnvironment {
+  id: string;
+  label: string;
+  connectionId: string | null;
+  dynamo: { region: string; tableName: string; endpoint: string; profile?: string };
 }
 
 export interface PersistedDynamoState {
@@ -230,8 +248,29 @@ export interface PersistedDynamoState {
 }
 
 export interface PersistedUiState {
-  /** Property key used to label graph nodes, or one of the __auto__/__label__/__id__ sentinels. */
+  /**
+   * Fallback for vertex types with no entry in `graphLabelModes` — a property
+   * key, or one of the __auto__/__label__/__id__ sentinels.
+   */
   graphLabelProperty?: string;
+  /**
+   * What each vertex type shows inside its node, keyed by vertex label
+   * (e.g. { block: 'block_type', principal: 'principal' }). One property cannot
+   * label a mixed graph, so the choice is per type and kept for the workspace.
+   */
+  graphLabelModes?: Record<string, string>;
+  /** The same, per edge type — Auto draws the type itself (`NESTED_IN`). */
+  graphEdgeLabelModes?: Record<string, string>;
+  /** Environment last opened in the sidebar editor. */
+  selectedEnvironmentId?: string;
+  /** Height in px the user dragged the query editor to; absent = the default. */
+  queryPanelHeight?: number;
+  /**
+   * Open/closed state of each collapsible sidebar section, keyed by section id.
+   * Absent ids fall back to the section's own default, so a newly-shipped
+   * section is not forced closed by an older saved workspace.
+   */
+  sidebarSections?: Record<string, boolean>;
 }
 
 export interface WorkspaceState {
@@ -240,6 +279,12 @@ export interface WorkspaceState {
   activeConnectionId: string | null;
   tabs: PersistedTab[];
   activeTabId: string | null;
+  /** Environments (graph endpoint + DynamoDB source). Absent in v1 workspaces. */
+  environments?: PersistedEnvironment[];
+  /**
+   * Legacy DynamoDB-only environment map. Still written so an older build can
+   * read the file, and used to migrate a workspace saved before environments.
+   */
   dynamo?: PersistedDynamoState;
   ui?: PersistedUiState;
 }

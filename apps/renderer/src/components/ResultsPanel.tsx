@@ -7,7 +7,7 @@ import { useApp } from '../state/AppContext';
 import { CanvasTable } from '../canvas/CanvasTable.js';
 import { CanvasJson } from '../canvas/CanvasJson.js';
 import { CanvasGraph } from '../canvas/CanvasGraph.js';
-import { LABEL_MODE_AUTO, LABEL_MODE_LABEL, LABEL_MODE_ID } from '../utils/helpers.js';
+import { LABEL_MODE_AUTO, LABEL_MODE_LABEL, LABEL_MODE_ID, LABEL_MODE_NONE } from '../utils/helpers.js';
 import { copyText } from '../utils/clipboard';
 import { DynamoModal } from './DynamoModal';
 
@@ -44,7 +44,31 @@ const RESULT_TABS = [
 ];
 
 /** Label modes that are not property keys. */
-const LABEL_SENTINELS: string[] = [LABEL_MODE_AUTO, LABEL_MODE_LABEL, LABEL_MODE_ID];
+const LABEL_SENTINELS: string[] = [LABEL_MODE_AUTO, LABEL_MODE_LABEL, LABEL_MODE_ID, LABEL_MODE_NONE];
+
+/** One vertex type in the loaded graph, as reported by CanvasGraph. */
+interface LabelInfo {
+  label: string;
+  color: string;
+  count: number;
+  propertyKeys: string[];
+  /** What Auto resolves to for this type, or null when it falls back to the id. */
+  autoKey: string | null;
+}
+
+/** One edge type in the loaded graph. Auto draws the type itself. */
+interface EdgeLabelInfo {
+  label: string;
+  count: number;
+  propertyKeys: string[];
+}
+
+const IconLabels = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 19 9.5 6 15 19" /><line x1="6.4" y1="14" x2="12.6" y2="14" />
+    <line x1="18" y1="19" x2="21" y2="19" /><path d="M18 15.5a1.6 1.6 0 0 1 3 .9V19" />
+  </svg>
+);
 
 // ── Canvas view wrappers ──────────────────────────────────────────────────────
 
@@ -82,43 +106,100 @@ function GraphView({ data }: { data: unknown[] }) {
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<InstanceType<typeof CanvasGraph> | null>(null);
 
-  const { graphLabelProperty, setGraphLabelProperty } = useApp();
+  const {
+    graphLabelProperty, setGraphLabelProperty,
+    graphLabelModes, setGraphLabelMode, resetGraphLabelModes,
+    graphEdgeLabelModes, setGraphEdgeLabelMode,
+    hydrateVertexProperties, hydrateEdgeProperties,
+  } = useApp();
   const [dynamoModal, setDynamoModal] = useState<{ id: string; item: Record<string, unknown> } | null>(null);
   const [pinnedItem, setPinnedItem]   = useState<Record<string, unknown> | null>(null);
   const [graphError, setGraphError]   = useState<string | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
-  const [propertyKeys, setPropertyKeys] = useState<string[]>([]);
+  const [labelInfo, setLabelInfo] = useState<LabelInfo[]>([]);
+  const [edgeLabelInfo, setEdgeLabelInfo] = useState<EdgeLabelInfo[]>([]);
+  const [labelPanelOpen, setLabelPanelOpen] = useState(false);
+  const [hydrating, setHydrating] = useState(false);
+  const [graphInfo, setGraphInfo] = useState<{ nodeCount: number; edgeCount: number } | null>(null);
+  const [graphWarning, setGraphWarning] = useState<string | null>(null);
 
-  // The renderer is created once; the saved label choice seeds it so the first
-  // paint already uses the right property, and the effect below keeps it in sync.
-  const initialLabelProperty = useRef(graphLabelProperty);
+  // The renderer is created once; the saved label choices seed it so the first
+  // paint already uses them, and the effects below keep it in sync.
+  const initialLabelProperty  = useRef(graphLabelProperty);
+  const initialLabelModes     = useRef(graphLabelModes);
+  const initialEdgeLabelModes = useRef(graphEdgeLabelModes);
 
   useEffect(() => {
     if (!canvasRef.current) return;
     rendererRef.current = new CanvasGraph(canvasRef.current, {
       onShowDynamoModal: (id: string, item: unknown) => setDynamoModal({ id, item: item as Record<string, unknown> }),
       labelProperty: initialLabelProperty.current,
+      labelModes: initialLabelModes.current,
+      edgeLabelModes: initialEdgeLabelModes.current,
     });
     return () => { rendererRef.current?.destroy(); rendererRef.current = null; };
   }, []);
 
   useEffect(() => {
     if (!rendererRef.current || !data) return;
+    let cancelled = false;
     setGraphLoading(true);
     setGraphError(null);
     rendererRef.current.setData(data)
-      .then(() => {
+      .then(async () => {
+        if (cancelled) return;
         setPinnedItem(null);
-        setPropertyKeys(rendererRef.current?.getPropertyKeys() ?? []);
+        setLabelInfo((rendererRef.current?.getLabelInfo() ?? []) as LabelInfo[]);
+        setEdgeLabelInfo((rendererRef.current?.getEdgeLabelInfo() ?? []) as EdgeLabelInfo[]);
+        // What the extractor actually made of the result — the counts say
+        // straight away whether a missing edge was dropped on the way in or
+        // never arrived, and the warning explains non-graph data.
+        setGraphInfo(rendererRef.current?.getInfo() ?? null);
+        setGraphWarning(rendererRef.current?.getWarning() ?? null);
         setGraphLoading(false);
+
+        // `path()` results carry no properties, so without this every node in
+        // such a graph would be labelled with its id. Fetch what the traversal
+        // left out, then relabel in place.
+        const missingNodes = rendererRef.current?.getNodesMissingProperties() ?? [];
+        const missingEdges = rendererRef.current?.getEdgesMissingProperties() ?? [];
+        if (missingNodes.length === 0 && missingEdges.length === 0) return;
+        setHydrating(true);
+        const [nodeProps, edgeProps] = await Promise.all([
+          missingNodes.length ? hydrateVertexProperties(missingNodes) : Promise.resolve({}),
+          missingEdges.length ? hydrateEdgeProperties(missingEdges) : Promise.resolve({}),
+        ]);
+        if (cancelled || !rendererRef.current) return;
+        if (rendererRef.current.mergeNodeProperties(nodeProps) > 0) {
+          setLabelInfo((rendererRef.current.getLabelInfo() ?? []) as LabelInfo[]);
+          setGraphInfo(rendererRef.current.getInfo() ?? null);
+        }
+        if (rendererRef.current.mergeEdgeProperties(edgeProps) > 0) {
+          setEdgeLabelInfo((rendererRef.current.getEdgeLabelInfo() ?? []) as EdgeLabelInfo[]);
+        }
+        setHydrating(false);
       })
-      .catch((err: Error) => { setGraphError(err.message || 'Failed to render graph'); setGraphLoading(false); });
-  }, [data]);
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setGraphError(err.message || 'Failed to render graph');
+        setGraphLoading(false);
+        setHydrating(false);
+      });
+    return () => { cancelled = true; };
+  }, [data, hydrateVertexProperties, hydrateEdgeProperties]);
 
   // Relabel in place — node positions are preserved.
   useEffect(() => {
     rendererRef.current?.setLabelProperty(graphLabelProperty);
   }, [graphLabelProperty]);
+
+  useEffect(() => {
+    rendererRef.current?.setLabelModes(graphLabelModes);
+  }, [graphLabelModes]);
+
+  useEffect(() => {
+    rendererRef.current?.setEdgeLabelModes(graphEdgeLabelModes);
+  }, [graphEdgeLabelModes]);
 
   useEffect(() => {
     if (!rendererRef.current) return;
@@ -140,29 +221,13 @@ function GraphView({ data }: { data: unknown[] }) {
   return (
     <div className="canvas-view-container graph-view">
       <div className="graph-controls">
-        <label className="graph-label-picker" title="Choose which property is shown inside each node">
-          <span>Label</span>
-          <select
-            value={graphLabelProperty}
-            onChange={e => setGraphLabelProperty(e.target.value)}
-          >
-            <option value={LABEL_MODE_AUTO}>Auto</option>
-            <option value={LABEL_MODE_LABEL}>Vertex label</option>
-            <option value={LABEL_MODE_ID}>ID</option>
-            {propertyKeys.length > 0 && (
-              <optgroup label="Properties">
-                {propertyKeys.map(key => (
-                  <option key={key} value={key}>{key}</option>
-                ))}
-              </optgroup>
-            )}
-            {/* A property saved from an earlier result set may not exist in this
-                one — keep it selectable so the choice is not silently reset. */}
-            {!LABEL_SENTINELS.includes(graphLabelProperty) && !propertyKeys.includes(graphLabelProperty) && (
-              <option value={graphLabelProperty}>{graphLabelProperty} (not in these results)</option>
-            )}
-          </select>
-        </label>
+        <button
+          className={`btn-icon ${labelPanelOpen ? 'active' : ''}`}
+          title="Labels — choose what each vertex type shows"
+          onClick={() => setLabelPanelOpen(open => !open)}
+        >
+          {IconLabels}
+        </button>
         <button className="btn-icon" title="Fit to screen" onClick={() => rendererRef.current?.autoFit()}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
@@ -182,6 +247,33 @@ function GraphView({ data }: { data: unknown[] }) {
         </button>
       </div>
 
+      {graphInfo && graphInfo.nodeCount > 0 && (
+        <div className="graph-stats">
+          <span>{graphInfo.nodeCount} {graphInfo.nodeCount === 1 ? 'vertex' : 'vertices'}</span>
+          <span className="graph-stats-sep">·</span>
+          <span className={graphInfo.edgeCount === 0 ? 'graph-stats-zero' : undefined}>
+            {graphInfo.edgeCount} {graphInfo.edgeCount === 1 ? 'edge' : 'edges'}
+          </span>
+        </div>
+      )}
+      {graphWarning && (
+        <div className="graph-warning-note" title={graphWarning}>⚠ {graphWarning}</div>
+      )}
+
+      {labelPanelOpen && (
+        <LabelPanel
+          info={labelInfo}
+          edgeInfo={edgeLabelInfo}
+          modes={graphLabelModes}
+          edgeModes={graphEdgeLabelModes}
+          fallback={graphLabelProperty}
+          onPick={setGraphLabelMode}
+          onPickEdge={setGraphEdgeLabelMode}
+          onReset={() => { resetGraphLabelModes(); setGraphLabelProperty(LABEL_MODE_AUTO); }}
+          onClose={() => setLabelPanelOpen(false)}
+        />
+      )}
+
       <canvas ref={canvasRef} />
 
       {graphLoading && (
@@ -191,6 +283,12 @@ function GraphView({ data }: { data: unknown[] }) {
         </div>
       )}
       {graphError && <div className="graph-error-overlay"><span>⚠ {graphError}</span></div>}
+      {hydrating && (
+        <div className="graph-hydrating">
+          <span className="loading-spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} />
+          Loading vertex properties…
+        </div>
+      )}
 
       {pinnedItem != null && (
         <DetailPanel
@@ -205,6 +303,124 @@ function GraphView({ data }: { data: unknown[] }) {
           graphItem={dynamoModal.item}
           onClose={() => setDynamoModal(null)}
         />
+      )}
+    </div>
+  );
+}
+
+// ── Labels panel ──────────────────────────────────────────────────────────────
+
+/**
+ * One property choice per vertex type — a single global property cannot label a
+ * mixed graph (picking `block_type` leaves every principal and resource node
+ * falling back to its id). Choices live in AppContext, so they are shared by
+ * every tab and restored on the next launch.
+ */
+function LabelPanel({ info, edgeInfo, modes, edgeModes, fallback, onPick, onPickEdge, onReset, onClose }: {
+  info: LabelInfo[];
+  edgeInfo: EdgeLabelInfo[];
+  modes: Record<string, string>;
+  edgeModes: Record<string, string>;
+  fallback: string;
+  onPick: (vertexLabel: string, mode: string) => void;
+  onPickEdge: (edgeLabel: string, mode: string) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  const customised =
+    info.some(i => modes[i.label] !== undefined) ||
+    edgeInfo.some(e => edgeModes[e.label] !== undefined) ||
+    fallback !== LABEL_MODE_AUTO;
+
+  return (
+    <div className="graph-label-panel">
+      <div className="glp-head">
+        <span className="glp-title">Labels</span>
+        <button className="btn-icon" title="Close" onClick={onClose}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <p className="glp-hint">What each type shows in the graph. Remembered for this workspace.</p>
+
+      <div className="glp-group-title">Vertices</div>
+      {info.length === 0 ? (
+        <div className="empty-state">No vertices in these results.</div>
+      ) : (
+        <div className="glp-rows">
+          {info.map(type => {
+            const value = modes[type.label] ?? fallback;
+            const known = LABEL_SENTINELS.includes(value) || type.propertyKeys.includes(value);
+            return (
+              <div className="glp-row" key={type.label}>
+                <div className="glp-row-head">
+                  <span className="glp-dot" style={{ background: type.color }} />
+                  <span className="glp-name" title={type.label}>{type.label}</span>
+                  <span className="glp-count">{type.count}</span>
+                </div>
+                <select value={value} onChange={e => onPick(type.label, e.target.value)}>
+                  <option value={LABEL_MODE_AUTO}>
+                    {type.autoKey ? `Auto — ${type.autoKey}` : 'Auto'}
+                  </option>
+                  <option value={LABEL_MODE_LABEL}>Vertex label</option>
+                  <option value={LABEL_MODE_ID}>ID</option>
+                  {type.propertyKeys.length > 0 && (
+                    <optgroup label="Properties">
+                      {type.propertyKeys.map(key => (
+                        <option key={key} value={key}>{key}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {/* A choice saved from an earlier result set may not exist on
+                      this type — keep it selectable rather than silently reset. */}
+                  {!known && <option value={value}>{value} (not on this type)</option>}
+                </select>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="glp-group-title">Edges</div>
+      {edgeInfo.length === 0 ? (
+        <div className="empty-state">No edges in these results.</div>
+      ) : (
+        <div className="glp-rows">
+          {edgeInfo.map(type => {
+            const value = edgeModes[type.label] ?? LABEL_MODE_AUTO;
+            const known = LABEL_SENTINELS.includes(value) || type.propertyKeys.includes(value);
+            return (
+              <div className="glp-row" key={type.label}>
+                <div className="glp-row-head">
+                  <span className="glp-edge-swatch" />
+                  <span className="glp-name" title={type.label}>{type.label}</span>
+                  <span className="glp-count">{type.count}</span>
+                </div>
+                <select value={value} onChange={e => onPickEdge(type.label, e.target.value)}>
+                  {/* Auto is the edge type itself — what an edge is read by. */}
+                  <option value={LABEL_MODE_AUTO}>Auto — edge type</option>
+                  <option value={LABEL_MODE_ID}>ID</option>
+                  <option value={LABEL_MODE_NONE}>Hide</option>
+                  {type.propertyKeys.length > 0 && (
+                    <optgroup label="Properties">
+                      {type.propertyKeys.map(key => (
+                        <option key={key} value={key}>{key}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {!known && <option value={value}>{value} (not on this type)</option>}
+                </select>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {customised && (
+        <div className="glp-foot">
+          <button className="link-btn" onClick={onReset}>Reset all to Auto</button>
+        </div>
       )}
     </div>
   );
@@ -314,7 +530,7 @@ function EmptyState() {
         <line x1="6" y1="18" x2="9.5" y2="13.5"/><line x1="18" y1="18" x2="14.5" y2="13.5"/>
       </svg>
       <h3>Ready to explore your graph</h3>
-      <p>Connect to a database and execute a query to see results</p>
+      <p>Pick an environment above the editor and execute a query to see results</p>
     </div>
   );
 }

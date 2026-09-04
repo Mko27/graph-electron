@@ -27,6 +27,7 @@ export type {
   DynamoConfigureRequest,
   DynamoConfigResponse,
   PersistedTab,
+  PersistedEnvironment,
   PersistedDynamoState,
   PersistedUiState,
   WorkspaceState,

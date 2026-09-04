@@ -1,22 +1,32 @@
 /**
- * AppContext — global state for multi-connection + multi-tab architecture.
+ * AppContext — global state for the environment + multi-tab architecture.
+ *
+ * An **environment** pairs one graph endpoint (Neptune by default) with one
+ * DynamoDB source. A query tab points at an environment rather than at a bare
+ * connection, so the graph being queried and the table enrichment reads from
+ * cannot drift apart — the old failure mode where the tab said "Plive" while
+ * DynamoDB was still serving `stage_blocks`.
  *
  * Architecture rules enforced here:
  *   ✅ All IPC goes through graphApi (no window.neptune / window.graphClient directly)
- *   ✅ Connection model uses ProviderConnectionDto (all 9 database types)
+ *   ✅ Each environment's endpoint is a ProviderConnectionDto (all 9 database types)
  *   ✅ Capabilities are stored per-connection and exposed for UI gating
  *   ✅ Dialect is carried from the connection into every query call
  *
  * State shape:
- *   connections: Record<id, ConnectionObject>
- *   queryTabs:   TabObject[]
- *   activeTabId: string
- *   notifications: Notification[]   — surfaced as toasts so no error is silent
- *   dynamo:      environment-aware DynamoDB enrichment config
+ *   environments:  EnvironmentObject[]          — ordered, user-editable
+ *   connections:   Record<id, ConnectionObject> — the endpoint each environment owns
+ *   queryTabs:     TabObject[]                  — each carries an environmentId
+ *   notifications: Notification[]               — surfaced as toasts so no error is silent
+ *   dynamoRuntime: which environment's DynamoDB config the main process holds
  *
- * Persistence: connections (secrets encrypted by the main process), query tabs,
- * the Dynamo environment map and UI preferences are written to disk on change
- * and restored on launch. Restored connections start disconnected.
+ * The live DynamoDB config follows the **active tab's** environment: switching
+ * tabs re-points enrichment. Editing a config still needs an explicit Apply, so
+ * a half-typed table name is never pushed.
+ *
+ * Persistence: environments, connections (secrets encrypted by the main
+ * process), query tabs and UI preferences are written to disk on change and
+ * restored on launch. Restored environments start disconnected.
  */
 
 import { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef } from 'react';
@@ -25,7 +35,7 @@ import {
   PROVIDER_CAPABILITIES,
   DEFAULT_PORTS,
   DYNAMO_ENVIRONMENTS,
-  DEFAULT_DYNAMO_ENVIRONMENT,
+  DYNAMO_ENVIRONMENT_ORDER,
 } from '@graph-client/shared';
 import type {
   ProviderConnectionDto,
@@ -33,6 +43,7 @@ import type {
   UICapabilities,
   WorkspaceState,
   PersistedTab,
+  PersistedEnvironment,
 } from '@graph-client/shared';
 import { LABEL_MODE_AUTO } from '../utils/helpers.js';
 
@@ -49,6 +60,30 @@ export interface ConnectionObject extends ProviderConnectionDto {
   capabilities: UICapabilities;
 }
 
+/** DynamoDB source of one environment. */
+export interface DynamoConfig {
+  region: string;
+  tableName: string;
+  endpoint: string;
+  profile?: string;
+}
+
+export interface EnvironmentObject {
+  id: string;
+  label: string;
+  /** Endpoint this environment owns — a key of `connections`, or null if unset. */
+  connectionId: string | null;
+  dynamo: DynamoConfig;
+}
+
+/** What the main process currently holds for DynamoDB lookups. */
+export interface DynamoRuntime {
+  /** Environment the held config came from. */
+  envId: string | null;
+  applied: boolean;
+  statusText: string;
+}
+
 export interface TabObject {
   id: string;
   name: string;
@@ -56,7 +91,7 @@ export interface TabObject {
   result: { data: unknown[]; duration: number; count: number } | null;
   error: string | null;
   isExecuting: boolean;
-  connectionId: string | null;
+  environmentId: string | null;
   activeResultTab: 'table' | 'graph' | 'json';
   history: Array<{ query: string; success: boolean; timestamp: string }>;
 }
@@ -78,59 +113,90 @@ export interface Notification {
   timestamp: string;
 }
 
-export interface DynamoEnvState {
-  label: string;
-  region: string;
-  tableName: string;
-  endpoint: string;
-  profile?: string;
-}
-
-export interface DynamoState {
-  /** Active environment id (a key of `environments`). */
-  environment: string;
-  environments: Record<string, DynamoEnvState>;
-  /** True once the active environment has been pushed to the main process. */
-  applied: boolean;
-  statusText: string;
-}
-
 interface AppContextValue {
+  // ── Environments ──
+  environments: EnvironmentObject[];
+  /** Environments with an endpoint set — the only ones a tab can be pointed at. */
+  configuredEnvironments: EnvironmentObject[];
+  /** Environment open in the sidebar editor. */
+  selectedEnvironmentId: string | null;
+  setSelectedEnvironmentId: (id: string) => void;
+  addEnvironment: () => void;
+  removeEnvironment: (id: string) => Promise<void>;
+  renameEnvironment: (id: string, label: string) => void;
+  /** Patch the environment's endpoint, minting the connection on first edit. */
+  updateEnvironmentGraph: (id: string, patch: Partial<ProviderConnectionDto>) => void;
+  updateEnvironmentDynamo: (id: string, patch: Partial<DynamoConfig>) => void;
+  applyEnvironmentDynamo: (id: string) => Promise<void>;
+  connectEnvironment: (id: string) => Promise<void>;
+  reconnectEnvironment: (id: string) => Promise<void>;
+  disconnectEnvironment: (id: string) => Promise<void>;
+  /** The endpoint of an environment, or null while it has none. */
+  envConnection: (env: EnvironmentObject | null | undefined) => ConnectionObject | null;
+  isEnvironmentConfigured: (env: EnvironmentObject | null | undefined) => boolean;
   connections: Record<string, ConnectionObject>;
-  activeConnectionId: string | null;
-  setActiveConnectionId: (id: string | null) => void;
-  addConnection: (dto: ProviderConnectionDto) => string;
-  updateConnectionConfig: (id: string, patch: Partial<ProviderConnectionDto>) => void;
-  connectConnection: (id: string) => Promise<void>;
-  reconnectConnection: (id: string) => Promise<void>;
-  disconnectConnection: (id: string) => Promise<void>;
-  removeConnection: (id: string) => Promise<void>;
-  loadSchema: (id: string) => Promise<void>;
+  loadSchema: (connectionId: string) => Promise<void>;
+  reconnectConnection: (connectionId: string) => Promise<void>;
+
+  // ── Tabs ──
   queryTabs: TabObject[];
   activeTabId: string;
   activeTab: TabObject | null;
+  activeTabEnvironment: EnvironmentObject | null;
   activeTabConnection: ConnectionObject | null;
   setActiveTabId: (id: string) => void;
-  addTab: (connectionId?: string | null) => void;
+  addTab: (environmentId?: string | null) => void;
   closeTab: (tabId: string) => void;
   renameTab: (tabId: string, name: string) => void;
   setTabQuery: (tabId: string, query: string) => void;
-  setTabConnection: (tabId: string, connectionId: string | null) => void;
+  /** Point a tab at an environment; connects it and re-points DynamoDB. */
+  setTabEnvironment: (tabId: string, environmentId: string | null) => Promise<void>;
   setTabResultView: (tabId: string, view: 'table' | 'graph' | 'json') => void;
   executeQuery: (tabId: string) => Promise<void>;
+
+  // ── Misc ──
   statusMessage: { message: string; type: 'info' | 'error' };
   setStatusMessage: (msg: { message: string; type: 'info' | 'error' }) => void;
   notifications: Notification[];
   notify: (n: Omit<Notification, 'id' | 'timestamp'>) => string;
   dismissNotification: (id: string) => void;
   clearNotifications: () => void;
-  dynamo: DynamoState;
-  setDynamoEnvironment: (envId: string) => Promise<void>;
-  updateDynamoEnvironment: (envId: string, patch: Partial<DynamoEnvState>) => void;
-  applyDynamoConfig: () => Promise<void>;
+  dynamoRuntime: DynamoRuntime;
   handleFetchDynamoItem: (id: string) => Promise<{ success: boolean; data?: Record<string, unknown> | null; message?: string }>;
+  /**
+   * Properties for vertices that came back as bare references, keyed by id.
+   * Ids that could not be read are simply absent from the result.
+   */
+  hydrateVertexProperties: (ids: string[]) => Promise<Record<string, Record<string, unknown>>>;
+  /**
+   * The same for edges, whose properties `path()` omits just as it does
+   * vertices'. Keyed by `outV|inV|type` as well as by the id the server
+   * reports — Neptune hands out a different edge id in a path than
+   * `elementMap()` returns for the same edge, so the id alone cannot match.
+   */
+  hydrateEdgeProperties: (ids: string[]) => Promise<Record<string, Record<string, unknown>>>;
   graphLabelProperty: string;
   setGraphLabelProperty: (property: string) => void;
+  /**
+   * What each vertex type shows inside its node, keyed by vertex label. Shared
+   * by every tab and persisted, so the choice is made once per project.
+   */
+  graphLabelModes: Record<string, string>;
+  setGraphLabelMode: (vertexLabel: string, mode: string) => void;
+  /** What each edge type draws on its line, keyed by edge type. */
+  graphEdgeLabelModes: Record<string, string>;
+  setGraphEdgeLabelMode: (edgeLabel: string, mode: string) => void;
+  /** Clears both maps — vertices and edges go back to Auto. */
+  resetGraphLabelModes: () => void;
+  /**
+   * Which collapsible sidebar sections are open, keyed by section id. Ids the
+   * user has never toggled are absent, so each section keeps its own default.
+   */
+  sidebarSections: Record<string, boolean>;
+  setSidebarSection: (id: string, open: boolean) => void;
+  /** Height the query editor was dragged to, or null for the default. */
+  queryPanelHeight: number | null;
+  setQueryPanelHeight: (height: number | null) => void;
   hydrated: boolean;
 }
 
@@ -158,6 +224,15 @@ function toDto(conn: ConnectionObject): ProviderConnectionDto {
   return out as unknown as ProviderConnectionDto;
 }
 
+function capabilitiesFor(dbType: string): UICapabilities {
+  return PROVIDER_CAPABILITIES[dbType] ?? {
+    supportsSchema: false,
+    supportsTransactions: false,
+    supportsMultiGraph: false,
+    supportsStreaming: false,
+  };
+}
+
 function makeConnection(dto: ProviderConnectionDto, overrides: Partial<ConnectionObject> = {}): ConnectionObject {
   return {
     ...dto,
@@ -167,17 +242,12 @@ function makeConnection(dto: ProviderConnectionDto, overrides: Partial<Connectio
     schema: null,
     schemaLoading: false,
     schemaError: null,
-    capabilities: PROVIDER_CAPABILITIES[dto.dbType] ?? {
-      supportsSchema: false,
-      supportsTransactions: false,
-      supportsMultiGraph: false,
-      supportsStreaming: false,
-    },
+    capabilities: capabilitiesFor(dto.dbType),
     ...overrides,
   };
 }
 
-function makeTab(id: string, name: string, connectionId: string | null = null): TabObject {
+function makeTab(id: string, name: string, environmentId: string | null = null): TabObject {
   return {
     id,
     name,
@@ -185,18 +255,41 @@ function makeTab(id: string, name: string, connectionId: string | null = null): 
     result: null,
     error: null,
     isExecuting: false,
-    connectionId,
+    environmentId,
     activeResultTab: 'table',
     history: [],
   };
 }
 
-function seedDynamoEnvironments(): Record<string, DynamoEnvState> {
-  const out: Record<string, DynamoEnvState> = {};
-  for (const [id, env] of Object.entries(DYNAMO_ENVIRONMENTS)) {
-    out[id] = { ...env };
-  }
-  return out;
+/** A fresh environment's endpoint: Neptune over IAM, host still to be filled in. */
+function makeEnvConnectionDto(id: string, name: string): ProviderConnectionDto {
+  return {
+    id,
+    name,
+    dbType: 'neptune',
+    dialect: 'gremlin',
+    host: '',
+    port: DEFAULT_PORTS['neptune'] ?? 8182,
+    ssl: true,
+    useIamAuth: true,
+  };
+}
+
+const DEFAULT_DYNAMO: DynamoConfig = { region: 'us-east-1', tableName: '', endpoint: '' };
+
+/** Local / Stage / Plive, seeded from the shipped DynamoDB defaults. */
+function seedEnvironments(): EnvironmentObject[] {
+  return DYNAMO_ENVIRONMENT_ORDER
+    .filter(id => DYNAMO_ENVIRONMENTS[id])
+    .map(id => {
+      const env = DYNAMO_ENVIRONMENTS[id];
+      return {
+        id,
+        label: env.label,
+        connectionId: null,
+        dynamo: { region: env.region, tableName: env.tableName, endpoint: env.endpoint },
+      };
+    });
 }
 
 /**
@@ -206,8 +299,11 @@ function seedDynamoEnvironments(): Record<string, DynamoEnvState> {
 const CONNECTION_LOST_RE =
   /not found — call connect|not connected|websocket|socket|econnreset|econnrefused|epipe|closed|hang ?up|timed out|timeout/i;
 
-/** How often connected connections are probed for a dropped link. */
+/** How often connected endpoints are probed for a dropped link. */
 const HEALTH_POLL_MS = 30_000;
+/** Vertex ids per hydration query, and the ceiling across one result set. */
+const HYDRATE_CHUNK = 200;
+const MAX_HYDRATE_IDS = 2000;
 /** Debounce before writing the workspace to disk. */
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -217,7 +313,10 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [connections, setConnections] = useState<Record<string, ConnectionObject>>({});
-  const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
+  const [environments, setEnvironments] = useState<EnvironmentObject[]>(() => seedEnvironments());
+  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | null>(
+    () => seedEnvironments()[0]?.id ?? null,
+  );
 
   const initialTabId = useRef(uid('tab')).current;
   const [queryTabs, setQueryTabs] = useState<TabObject[]>(() => [makeTab(initialTabId, 'Query 1')]);
@@ -227,14 +326,49 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     type: 'info',
   });
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [dynamo, setDynamo] = useState<DynamoState>(() => ({
-    environment: DEFAULT_DYNAMO_ENVIRONMENT,
-    environments: seedDynamoEnvironments(),
+  const [dynamoRuntime, setDynamoRuntime] = useState<DynamoRuntime>({
+    envId: null,
     applied: false,
     statusText: 'Not configured',
-  }));
+  });
   const [graphLabelProperty, setGraphLabelProperty] = useState<string>(LABEL_MODE_AUTO);
+  const [graphLabelModes, setGraphLabelModes] = useState<Record<string, string>>({});
+  const [graphEdgeLabelModes, setGraphEdgeLabelModes] = useState<Record<string, string>>({});
+  const [sidebarSections, setSidebarSections] = useState<Record<string, boolean>>({});
+  const [queryPanelHeight, setQueryPanelHeight] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
+
+  // Latest state for callbacks that must not close over a stale render (a
+  // connection minted moments ago, an environment edited mid-flight).
+  const envsRef  = useRef(environments);
+  const connsRef = useRef(connections);
+  const tabsRef  = useRef(queryTabs);
+  const dynamoRuntimeRef = useRef(dynamoRuntime);
+  /** Assigned further down, once the active tab's connection is derived. */
+  const activeConnRef = useRef<ConnectionObject | null>(null);
+  envsRef.current  = environments;
+  connsRef.current = connections;
+  tabsRef.current  = queryTabs;
+  dynamoRuntimeRef.current = dynamoRuntime;
+
+  /** Per-vertex-type node labelling, persisted with the workspace. */
+  const setGraphLabelMode = useCallback((vertexLabel: string, mode: string) => {
+    setGraphLabelModes(prev => (prev[vertexLabel] === mode ? prev : { ...prev, [vertexLabel]: mode }));
+  }, []);
+
+  const setGraphEdgeLabelMode = useCallback((edgeLabel: string, mode: string) => {
+    setGraphEdgeLabelModes(prev => (prev[edgeLabel] === mode ? prev : { ...prev, [edgeLabel]: mode }));
+  }, []);
+
+  const resetGraphLabelModes = useCallback(() => {
+    setGraphLabelModes({});
+    setGraphEdgeLabelModes({});
+  }, []);
+
+  /** Sidebar accordion state, persisted so a closed section stays closed. */
+  const setSidebarSection = useCallback((id: string, open: boolean) => {
+    setSidebarSections(prev => (prev[id] === open ? prev : { ...prev, [id]: open }));
+  }, []);
 
   // ── Notifications ─────────────────────────────────────────────────────────
 
@@ -270,30 +404,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setQueryTabs(prev => prev.map(t => (t.id === tabId ? { ...t, ...updates } : t)));
   }, []);
 
-  const resolveConnection = useCallback(
-    (tabId: string): ConnectionObject | null => {
-      const tab = queryTabs.find(t => t.id === tabId);
-      if (!tab) return null;
-      if (tab.connectionId && connections[tab.connectionId]) return connections[tab.connectionId];
-      if (activeConnectionId && connections[activeConnectionId]) return connections[activeConnectionId];
-      return Object.values(connections).find(c => c.state === 'connected') ?? null;
-    },
-    [queryTabs, connections, activeConnectionId],
+  const envConnection = useCallback(
+    (env: EnvironmentObject | null | undefined): ConnectionObject | null =>
+      (env?.connectionId ? connections[env.connectionId] ?? null : null),
+    [connections],
   );
 
-  // ── Connection actions ────────────────────────────────────────────────────
+  const isEnvironmentConfigured = useCallback(
+    (env: EnvironmentObject | null | undefined): boolean => {
+      const conn = env?.connectionId ? connections[env.connectionId] : null;
+      return !!conn && conn.host.trim() !== '';
+    },
+    [connections],
+  );
 
-  const addConnection = useCallback((dto: ProviderConnectionDto): string => {
-    const id = dto.id || uid('conn');
-    const conn = makeConnection({ ...dto, id });
-    setConnections(prev => ({ ...prev, [id]: conn }));
-    setActiveConnectionId(id);
-    return id;
+  /** Same check against the freshest state, for use inside async callbacks. */
+  const readEnv = useCallback((envId: string | null | undefined) => {
+    const env = envId ? envsRef.current.find(e => e.id === envId) ?? null : null;
+    const conn = env?.connectionId ? connsRef.current[env.connectionId] ?? null : null;
+    return { env, conn, configured: !!conn && conn.host.trim() !== '' };
   }, []);
 
-  const updateConnectionConfig = useCallback((id: string, patch: Partial<ProviderConnectionDto>) => {
-    updateConn(id, patch as Partial<ConnectionObject>);
-  }, [updateConn]);
+  // ── Schema ────────────────────────────────────────────────────────────────
 
   const loadSchema = useCallback(async (connectionId: string) => {
     updateConn(connectionId, { schemaLoading: true, schemaError: null });
@@ -313,86 +445,287 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [updateConn, notify]);
 
+  // ── Connecting ────────────────────────────────────────────────────────────
+
   /**
-   * Open (or re-open) a connection. The manager in the main process closes any
+   * Open (or re-open) an endpoint. The manager in the main process closes any
    * existing handle for the id first, so this doubles as the reconnect path.
+   * Returns whether the endpoint is connected afterwards, which lets Execute
+   * connect-then-run instead of dead-ending on a disconnected environment.
    */
-  const openConnection: (id: string, isRetry: boolean) => Promise<void> = useCallback(async (id: string, isRetry: boolean) => {
-    const conn = connections[id];
-    if (!conn) return;
+  const openConnection: (id: string, isRetry: boolean) => Promise<boolean> = useCallback(
+    async (id: string, isRetry: boolean) => {
+      const conn = connsRef.current[id];
+      if (!conn) return false;
 
-    updateConn(id, {
-      state: 'connecting',
-      statusText: isRetry ? 'Reconnecting…' : 'Connecting…',
-    });
-    setStatusMessage({
-      message: `${isRetry ? 'Reconnecting to' : 'Connecting to'} ${conn.name}…`,
-      type: 'info',
-    });
+      updateConn(id, {
+        state: 'connecting',
+        statusText: isRetry ? 'Reconnecting…' : 'Connecting…',
+      });
+      setStatusMessage({
+        message: `${isRetry ? 'Reconnecting to' : 'Connecting to'} ${conn.name}…`,
+        type: 'info',
+      });
 
-    try {
-      const result = await graphApi.connect(toDto(conn));
-      if (result.success) {
-        updateConn(id, { state: 'connected', statusText: `Connected${result.url ? ` — ${result.url}` : ''}` });
-        setStatusMessage({ message: `${isRetry ? 'Reconnected to' : 'Connected to'} ${conn.name}`, type: 'info' });
-        if (isRetry) notify({ type: 'success', title: `Reconnected to ${conn.name}` });
-        if (conn.capabilities.supportsSchema) loadSchema(id);
-      } else {
+      try {
+        const result = await graphApi.connect(toDto(conn));
+        if (result.success) {
+          updateConn(id, { state: 'connected', statusText: `Connected${result.url ? ` — ${result.url}` : ''}` });
+          setStatusMessage({ message: `${isRetry ? 'Reconnected to' : 'Connected to'} ${conn.name}`, type: 'info' });
+          if (isRetry) notify({ type: 'success', title: `Reconnected to ${conn.name}` });
+          if (conn.capabilities.supportsSchema) loadSchema(id);
+          return true;
+        }
         const msg = result.message ?? 'Connection failed';
         updateConn(id, { state: 'error', statusText: msg });
         reportError(`${conn.name}: connection failed`, msg, {
           label: 'Retry',
           run: () => { void openConnection(id, true); },
         });
+        return false;
+      } catch (err) {
+        const msg = (err as Error).message;
+        updateConn(id, { state: 'error', statusText: msg });
+        reportError(`${conn.name}: connection failed`, msg, {
+          label: 'Retry',
+          run: () => { void openConnection(id, true); },
+        });
+        return false;
+      }
+    },
+    [updateConn, loadSchema, notify, reportError],
+  );
+
+  const reconnectConnection = useCallback(
+    async (id: string) => { await openConnection(id, true); },
+    [openConnection],
+  );
+
+  // ── DynamoDB ──────────────────────────────────────────────────────────────
+
+  /** Point the main process at one environment's table. */
+  const pushDynamoConfig = useCallback(async (env: EnvironmentObject) => {
+    try {
+      const result = await graphApi.dynamoConfigure({
+        environment: env.id,
+        region: env.dynamo.region.trim() || 'us-east-1',
+        tableName: env.dynamo.tableName.trim(),
+        endpoint: env.dynamo.endpoint.trim(),
+        profile: (env.dynamo.profile ?? '').trim(),
+      });
+
+      if (result.success) {
+        const text = `${env.label} — ${result.tableName} (${result.region})`;
+        setDynamoRuntime({ envId: env.id, applied: true, statusText: text });
+        setStatusMessage({ message: `DynamoDB: ${text}`, type: 'info' });
+      } else {
+        setDynamoRuntime({ envId: env.id, applied: false, statusText: result.message ?? 'Config failed' });
+        reportError(`${env.label}: DynamoDB config failed`, result.message);
       }
     } catch (err) {
       const msg = (err as Error).message;
-      updateConn(id, { state: 'error', statusText: msg });
-      reportError(`${conn.name}: connection failed`, msg, {
-        label: 'Retry',
-        run: () => { void openConnection(id, true); },
+      setDynamoRuntime({ envId: env.id, applied: false, statusText: msg });
+      reportError(`${env.label}: DynamoDB config failed`, msg);
+    }
+  }, [reportError]);
+
+  const applyEnvironmentDynamo = useCallback(async (envId: string) => {
+    const env = envsRef.current.find(e => e.id === envId);
+    if (env) await pushDynamoConfig(env);
+  }, [pushDynamoConfig]);
+
+  const handleFetchDynamoItem = useCallback((id: string) => graphApi.dynamoFetchItem(id), []);
+
+  // ── Vertex hydration ──────────────────────────────────────────────────────
+
+  /**
+   * A `path()` traversal returns its vertices as references — id and label,
+   * `properties: []` — so the graph view has nothing to label them with. This
+   * reads the properties for those ids back over the same connection.
+   *
+   * Gremlin only for now: `elementMap()` is the one shape verified against
+   * Neptune. Other dialects return an empty map, which leaves the labels
+   * exactly as the query delivered them.
+   */
+  const hydrateElements = useCallback(
+    async (step: 'V' | 'E', ids: string[]): Promise<Record<string, Record<string, unknown>>> => {
+      const conn = activeConnRef.current;
+      if (!conn || conn.state !== 'connected' || conn.dialect !== 'gremlin') return {};
+
+      const unique = [...new Set(ids.filter(Boolean))].slice(0, MAX_HYDRATE_IDS);
+      if (unique.length === 0) return {};
+
+      const quote = (id: string) => `'${id.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+      const out: Record<string, Record<string, unknown>> = {};
+
+      for (let i = 0; i < unique.length; i += HYDRATE_CHUNK) {
+        const chunk = unique.slice(i, i + HYDRATE_CHUNK);
+        try {
+          const result = await graphApi.query({
+            id: conn.id,
+            query: `g.${step}(${chunk.map(quote).join(',')}).elementMap().toList()`,
+            dialect: 'gremlin',
+          });
+          if (!result.success) continue;
+          for (const row of (result.data as unknown[]) ?? []) {
+            if (!row || typeof row !== 'object') continue;
+            const map = row as Record<string, unknown>;
+            const id = map.id;
+            if (typeof id !== 'string' && typeof id !== 'number') continue;
+            // `id`/`label` are element tokens rather than properties, and an
+            // edge's elementMap also carries its endpoints under IN/OUT.
+            const { id: _id, label: _label, IN: inV, OUT: outV, ...props } = map;
+            out[String(id)] = props;
+
+            // Neptune reports a different edge id here than the one embedded in
+            // a path(), so an edge is also filed under its endpoints and type,
+            // which do match. (Parallel edges of one type between the same pair
+            // share an entry — they would carry the same label either way.)
+            if (step === 'E') {
+              const endpoint = (v: unknown) =>
+                (v && typeof v === 'object' ? String((v as Record<string, unknown>).id ?? '') : String(v ?? ''));
+              const from = endpoint(outV);
+              const to = endpoint(inV);
+              if (from && to) out[`${from}|${to}|${String(map.label ?? '')}`] = props;
+            }
+          }
+        } catch {
+          // A failed hydration is not worth interrupting the view for — the
+          // elements simply keep the label they already had.
+        }
+      }
+      return out;
+    },
+    [],
+  );
+
+  const hydrateVertexProperties = useCallback(
+    (ids: string[]) => hydrateElements('V', ids),
+    [hydrateElements],
+  );
+
+  const hydrateEdgeProperties = useCallback(
+    (ids: string[]) => hydrateElements('E', ids),
+    [hydrateElements],
+  );
+
+  // ── Environment actions ───────────────────────────────────────────────────
+
+  const addEnvironment = useCallback(() => {
+    const label = `Environment ${envsRef.current.length + 1}`;
+    const env: EnvironmentObject = {
+      id: uid('env'),
+      label,
+      connectionId: null,
+      dynamo: { ...DEFAULT_DYNAMO },
+    };
+    setEnvironments(prev => [...prev, env]);
+    setSelectedEnvironmentId(env.id);
+  }, []);
+
+  const renameEnvironment = useCallback((id: string, label: string) => {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    setEnvironments(prev => prev.map(e => (e.id === id ? { ...e, label: trimmed } : e)));
+    // The endpoint carries the environment's name into status text and errors.
+    const env = envsRef.current.find(e => e.id === id);
+    if (env?.connectionId) updateConn(env.connectionId, { name: trimmed });
+  }, [updateConn]);
+
+  const removeEnvironment = useCallback(async (id: string) => {
+    const env = envsRef.current.find(e => e.id === id);
+    if (!env) return;
+
+    if (env.connectionId) {
+      await graphApi.disconnect(env.connectionId).catch(() => undefined);
+      const connId = env.connectionId;
+      setConnections(prev => {
+        const next = { ...prev };
+        delete next[connId];
+        return next;
       });
     }
-  }, [connections, updateConn, loadSchema, notify, reportError]);
 
-  const connectConnection = useCallback((id: string) => openConnection(id, false), [openConnection]);
-  const reconnectConnection = useCallback((id: string) => openConnection(id, true), [openConnection]);
+    setEnvironments(prev => prev.filter(e => e.id !== id));
+    setQueryTabs(prev => prev.map(t => (t.environmentId === id ? { ...t, environmentId: null } : t)));
+    setSelectedEnvironmentId(prev => {
+      if (prev !== id) return prev;
+      return envsRef.current.find(e => e.id !== id)?.id ?? null;
+    });
+    if (dynamoRuntimeRef.current.envId === id) {
+      setDynamoRuntime({ envId: null, applied: false, statusText: 'Not configured' });
+    }
+  }, []);
 
-  const disconnectConnection = useCallback(async (id: string) => {
+  const updateEnvironmentGraph = useCallback((id: string, patch: Partial<ProviderConnectionDto>) => {
+    const env = envsRef.current.find(e => e.id === id);
+    if (!env) return;
+
+    if (env.connectionId && connsRef.current[env.connectionId]) {
+      const next = patch as Partial<ConnectionObject>;
+      // Switching database type changes what the UI may offer for it.
+      if (patch.dbType) next.capabilities = capabilitiesFor(patch.dbType);
+      updateConn(env.connectionId, next);
+      return;
+    }
+
+    // First edit — mint the endpoint this environment owns.
+    const connId = uid('conn');
+    const dto = { ...makeEnvConnectionDto(connId, env.label), ...patch, id: connId };
+    setConnections(prev => ({ ...prev, [connId]: makeConnection(dto, { statusText: 'Not connected' }) }));
+    setEnvironments(prev => prev.map(e => (e.id === id ? { ...e, connectionId: connId } : e)));
+  }, [updateConn]);
+
+  const updateEnvironmentDynamo = useCallback((id: string, patch: Partial<DynamoConfig>) => {
+    setEnvironments(prev => prev.map(e => (e.id === id ? { ...e, dynamo: { ...e.dynamo, ...patch } } : e)));
+    // Editing the live environment invalidates what the main process holds.
+    if (dynamoRuntimeRef.current.envId === id) {
+      setDynamoRuntime(prev => ({ ...prev, applied: false, statusText: 'Edited — not applied' }));
+    }
+  }, []);
+
+  const connectEnvironmentWith = useCallback(async (envId: string, isRetry: boolean) => {
+    const { env, conn, configured } = readEnv(envId);
+    if (!env) return;
+    if (!configured || !conn) {
+      reportError(
+        `${env?.label ?? 'Environment'}: no endpoint configured`,
+        'Set this environment’s graph endpoint in the sidebar before connecting.',
+      );
+      return;
+    }
+    await openConnection(conn.id, isRetry);
+  }, [readEnv, openConnection, reportError]);
+
+  const connectEnvironment   = useCallback((id: string) => connectEnvironmentWith(id, false), [connectEnvironmentWith]);
+  const reconnectEnvironment = useCallback((id: string) => connectEnvironmentWith(id, true), [connectEnvironmentWith]);
+
+  const disconnectEnvironment = useCallback(async (id: string) => {
+    const { conn } = readEnv(id);
+    if (!conn) return;
     try {
-      await graphApi.disconnect(id);
-      updateConn(id, { state: 'disconnected', statusText: 'Disconnected', schema: null, schemaError: null });
+      await graphApi.disconnect(conn.id);
+      updateConn(conn.id, { state: 'disconnected', statusText: 'Disconnected', schema: null, schemaError: null });
       setStatusMessage({ message: 'Disconnected', type: 'info' });
     } catch (err) {
       reportError('Disconnect failed', (err as Error).message);
     }
-  }, [updateConn, reportError]);
-
-  const removeConnection = useCallback(async (id: string) => {
-    await graphApi.disconnect(id).catch(() => undefined);
-    setConnections(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-    setActiveConnectionId(prev => {
-      if (prev !== id) return prev;
-      const remaining = Object.keys(connections).filter(k => k !== id);
-      return remaining[0] ?? null;
-    });
-    setQueryTabs(prev => prev.map(t => (t.connectionId === id ? { ...t, connectionId: null } : t)));
-  }, [connections]);
+  }, [readEnv, updateConn, reportError]);
 
   // ── Tab actions ───────────────────────────────────────────────────────────
 
-  const addTab = useCallback((connectionId: string | null = null) => {
+  const addTab = useCallback((environmentId: string | null = null) => {
     setQueryTabs(prev => {
       const id = uid('tab');
-      const newTab = makeTab(id, `Query ${prev.length + 1}`, connectionId);
+      // Inherit the current tab's environment, so a new tab is ready to run.
+      const inherited = environmentId
+        ?? prev.find(t => t.id === activeTabId)?.environmentId
+        ?? null;
+      const newTab = makeTab(id, `Query ${prev.length + 1}`, inherited);
       setActiveTabId(id);
       return [...prev, newTab];
     });
-  }, []);
+  }, [activeTabId]);
 
   const closeTab = useCallback((tabId: string) => {
     setQueryTabs(prev => {
@@ -409,31 +742,58 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const renameTab = useCallback((tabId: string, name: string) => updateTab(tabId, { name }), [updateTab]);
   const setTabQuery = useCallback((tabId: string, query: string) => updateTab(tabId, { query }), [updateTab]);
-  const setTabConnection = useCallback((tabId: string, connectionId: string | null) => updateTab(tabId, { connectionId }), [updateTab]);
   const setTabResultView = useCallback((tabId: string, view: 'table' | 'graph' | 'json') => updateTab(tabId, { activeResultTab: view }), [updateTab]);
+
+  /**
+   * Picking an environment is a request to query it, so this also opens the
+   * connection. DynamoDB follows through the active-tab effect below.
+   */
+  const setTabEnvironment = useCallback(async (tabId: string, environmentId: string | null) => {
+    updateTab(tabId, { environmentId });
+    if (!environmentId) return;
+
+    const { env, conn, configured } = readEnv(environmentId);
+    if (!env) return;
+    if (!configured || !conn) {
+      notify({
+        type: 'warning',
+        title: `${env.label} has no endpoint yet`,
+        detail: 'Add its graph endpoint in the sidebar’s Environments section, then it can run queries.',
+      });
+      return;
+    }
+    if (conn.state !== 'connected' && conn.state !== 'connecting') {
+      await openConnection(conn.id, false);
+    }
+  }, [updateTab, readEnv, openConnection, notify]);
 
   // ── Query execution ───────────────────────────────────────────────────────
 
   const executeQuery = useCallback(async (tabId: string) => {
-    const tab = queryTabs.find(t => t.id === tabId);
+    const tab = tabsRef.current.find(t => t.id === tabId);
     if (!tab?.query.trim()) {
       setStatusMessage({ message: 'Enter a query first', type: 'error' });
       return;
     }
     if (tab.isExecuting) return;
 
-    const conn = resolveConnection(tabId);
-    if (!conn || conn.state !== 'connected') {
+    const { env, conn, configured } = readEnv(tab.environmentId);
+    if (!env || !configured || !conn) {
       reportError(
-        'No active connection',
-        'Connect a database before running a query. Pick one in the tab’s connection selector, or add one in the sidebar.',
-        conn ? { label: `Connect ${conn.name}`, run: () => { void openConnection(conn.id, false); } } : undefined,
+        'No environment selected',
+        'Pick an environment above the editor, or set one up in the sidebar’s Environments section.',
       );
       return;
     }
 
+    // A disconnected environment is not a dead end: connect, then run.
+    if (conn.state !== 'connected') {
+      const opened = await openConnection(conn.id, false);
+      if (!opened) return; // openConnection already reported why.
+    }
+
     updateTab(tabId, { isExecuting: true, error: null });
-    setStatusMessage({ message: `Executing on ${conn.name}…`, type: 'info' });
+    setStatusMessage({ message: `Executing on ${env.label}…`, type: 'info' });
 
     const failTab = (message: string) => {
       updateTab(tabId, {
@@ -446,7 +806,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         updateConn(conn.id, { state: 'error', statusText: 'Connection lost' });
       }
       reportError(
-        `Query failed on ${conn.name}`,
+        `Query failed on ${env.label}`,
         message,
         lostConnection
           ? { label: 'Reconnect', run: () => { void openConnection(conn.id, true); } }
@@ -486,62 +846,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       failTab((err as Error).message || String(err));
     }
-  }, [queryTabs, resolveConnection, updateTab, updateConn, openConnection, reportError, notify]);
-
-  // ── DynamoDB ──────────────────────────────────────────────────────────────
-
-  const pushDynamoConfig = useCallback(async (envId: string, env: DynamoEnvState) => {
-    try {
-      const result = await graphApi.dynamoConfigure({
-        environment: envId,
-        region: env.region.trim() || 'us-east-1',
-        tableName: env.tableName.trim(),
-        endpoint: env.endpoint.trim(),
-        profile: (env.profile ?? '').trim(),
-      });
-
-      if (result.success) {
-        const text = `${env.label} — ${result.tableName} (${result.region})`;
-        setDynamo(prev => ({ ...prev, applied: true, statusText: text }));
-        setStatusMessage({ message: `DynamoDB: ${text}`, type: 'info' });
-      } else {
-        setDynamo(prev => ({ ...prev, applied: false, statusText: result.message ?? 'Config failed' }));
-        reportError('DynamoDB config failed', result.message);
-      }
-    } catch (err) {
-      const msg = (err as Error).message;
-      setDynamo(prev => ({ ...prev, applied: false, statusText: msg }));
-      reportError('DynamoDB config failed', msg);
-    }
-  }, [reportError]);
-
-  const setDynamoEnvironment = useCallback(async (envId: string) => {
-    const env = dynamo.environments[envId];
-    if (!env) return;
-    setDynamo(prev => ({ ...prev, environment: envId, applied: false, statusText: `Switching to ${env.label}…` }));
-    await pushDynamoConfig(envId, env);
-  }, [dynamo.environments, pushDynamoConfig]);
-
-  const updateDynamoEnvironment = useCallback((envId: string, patch: Partial<DynamoEnvState>) => {
-    setDynamo(prev => {
-      const existing = prev.environments[envId];
-      if (!existing) return prev;
-      return {
-        ...prev,
-        // Editing the active environment invalidates what the main process holds.
-        applied: envId === prev.environment ? false : prev.applied,
-        environments: { ...prev.environments, [envId]: { ...existing, ...patch } },
-      };
-    });
-  }, []);
-
-  const applyDynamoConfig = useCallback(async () => {
-    const env = dynamo.environments[dynamo.environment];
-    if (!env) return;
-    await pushDynamoConfig(dynamo.environment, env);
-  }, [dynamo.environment, dynamo.environments, pushDynamoConfig]);
-
-  const handleFetchDynamoItem = useCallback((id: string) => graphApi.dynamoFetchItem(id), []);
+  }, [readEnv, updateTab, updateConn, openConnection, reportError, notify]);
 
   // ── Workspace persistence ─────────────────────────────────────────────────
 
@@ -554,42 +859,46 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const res = await graphApi.workspaceLoad();
         if (cancelled) return;
 
-        if (!res.success) {
+        if (!res.success && res.message) {
           notify({
             type: 'warning',
             title: 'Saved workspace could not be read',
-            detail: `${res.message ?? 'Unknown error'} — starting with an empty workspace.`,
+            detail: `${res.message} — starting with an empty workspace.`,
           });
         }
 
         const state = res.state;
         if (state) {
-          if (state.connections.length > 0) {
-            const restored: Record<string, ConnectionObject> = {};
-            for (const dto of state.connections) {
-              restored[dto.id] = makeConnection(dto, { statusText: 'Saved — not connected' });
-            }
-            setConnections(restored);
-            setActiveConnectionId(
-              state.activeConnectionId && restored[state.activeConnectionId]
-                ? state.activeConnectionId
-                : Object.keys(restored)[0] ?? null,
-            );
+          // Endpoints first: environments and tabs reference them by id.
+          const restored: Record<string, ConnectionObject> = {};
+          for (const dto of state.connections ?? []) {
+            restored[dto.id] = makeConnection(dto, { statusText: 'Saved — not connected' });
+          }
 
+          if (Object.keys(restored).length > 0) {
+            setConnections(restored);
             if (!res.secretsAvailable) {
               notify({
                 type: 'warning',
                 title: 'Saved credentials were not restored',
                 detail:
                   'This machine’s OS keychain is unavailable, so passwords and tokens were not written to disk. ' +
-                  'Re-enter them on the affected connections before connecting.',
+                  'Re-enter them on the affected environments before connecting.',
               });
             }
           }
 
+          const envs = restoreEnvironments(state, restored);
+          setEnvironments(envs);
+
+          const selected = state.ui?.selectedEnvironmentId && envs.some(e => e.id === state.ui!.selectedEnvironmentId)
+            ? state.ui!.selectedEnvironmentId!
+            : envs[0]?.id ?? null;
+          setSelectedEnvironmentId(selected);
+
           if (state.tabs.length > 0) {
             const tabs = state.tabs.map(t => ({
-              ...makeTab(t.id, t.name, t.connectionId ?? null),
+              ...makeTab(t.id, t.name, resolveTabEnvironment(t, envs)),
               query: t.query ?? '',
               activeResultTab: t.activeResultTab ?? 'table',
               history: Array.isArray(t.history) ? t.history : [],
@@ -602,24 +911,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             );
           }
 
-          if (state.dynamo?.environments && Object.keys(state.dynamo.environments).length > 0) {
-            // Merge over the seeds so newly-shipped environments still appear.
-            const merged = { ...seedDynamoEnvironments(), ...state.dynamo.environments };
-            const activeEnv = merged[state.dynamo.environment] ? state.dynamo.environment : DEFAULT_DYNAMO_ENVIRONMENT;
-            setDynamo(prev => ({
-              ...prev,
-              environment: activeEnv,
-              environments: merged,
-              statusText: 'Not configured',
-            }));
-            // Re-point the main process at the restored environment.
-            void pushDynamoConfig(activeEnv, merged[activeEnv]);
-          }
-
           if (state.ui?.graphLabelProperty) setGraphLabelProperty(state.ui.graphLabelProperty);
+          if (state.ui?.graphLabelModes) setGraphLabelModes(state.ui.graphLabelModes);
+          if (state.ui?.graphEdgeLabelModes) setGraphEdgeLabelModes(state.ui.graphEdgeLabelModes);
+          if (state.ui?.sidebarSections) setSidebarSections(state.ui.sidebarSections);
+          if (state.ui?.queryPanelHeight) setQueryPanelHeight(state.ui.queryPanelHeight);
 
           setStatusMessage({
-            message: `Workspace restored — ${state.connections.length} connection(s), ${state.tabs.length} tab(s)`,
+            message: `Workspace restored — ${envs.length} environment(s), ${state.tabs.length} tab(s)`,
             type: 'info',
           });
         }
@@ -633,26 +932,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })();
 
     return () => { cancelled = true; };
-    // Runs once — pushDynamoConfig/notify are stable enough for a mount-only load.
+    // Runs once — notify is stable enough for a mount-only load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const serializeWorkspace = useCallback((): WorkspaceState => ({
     version: 1,
     connections: Object.values(connections).map(toDto),
-    activeConnectionId,
+    // Kept for builds that predate environments; the sidebar no longer uses it.
+    activeConnectionId: environments.find(e => e.id === selectedEnvironmentId)?.connectionId ?? null,
     tabs: queryTabs.map<PersistedTab>(t => ({
       id: t.id,
       name: t.name,
       query: t.query,
-      connectionId: t.connectionId,
+      environmentId: t.environmentId,
+      connectionId: environments.find(e => e.id === t.environmentId)?.connectionId ?? null,
       activeResultTab: t.activeResultTab,
       history: t.history,
     })),
     activeTabId,
-    dynamo: { environment: dynamo.environment, environments: dynamo.environments },
-    ui: { graphLabelProperty },
-  }), [connections, activeConnectionId, queryTabs, activeTabId, dynamo.environment, dynamo.environments, graphLabelProperty]);
+    environments: environments.map<PersistedEnvironment>(e => ({
+      id: e.id,
+      label: e.label,
+      connectionId: e.connectionId,
+      dynamo: e.dynamo,
+    })),
+    // Legacy mirror, so an older build still finds its DynamoDB environments.
+    dynamo: {
+      environment: dynamoRuntime.envId ?? environments[0]?.id ?? 'local',
+      environments: Object.fromEntries(
+        environments.map(e => [e.id, { label: e.label, ...e.dynamo }]),
+      ),
+    },
+    ui: {
+      graphLabelProperty,
+      graphLabelModes,
+      graphEdgeLabelModes,
+      sidebarSections,
+      ...(selectedEnvironmentId ? { selectedEnvironmentId } : {}),
+      ...(queryPanelHeight ? { queryPanelHeight } : {}),
+    },
+  }), [connections, environments, selectedEnvironmentId, queryTabs, activeTabId, dynamoRuntime.envId, graphLabelProperty, graphLabelModes, graphEdgeLabelModes, sidebarSections, queryPanelHeight]);
 
   // Debounced save. Query *results* are deliberately not persisted — only the
   // queries themselves, their history and the tab layout.
@@ -675,10 +995,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('beforeunload', flush);
   }, [hydrated]);
 
+  // ── Derived tab state ─────────────────────────────────────────────────────
+
+  const activeTab = useMemo(
+    () => queryTabs.find(t => t.id === activeTabId) ?? queryTabs[0] ?? null,
+    [queryTabs, activeTabId],
+  );
+
+  const activeTabEnvironment = useMemo(
+    () => environments.find(e => e.id === activeTab?.environmentId) ?? null,
+    [environments, activeTab?.environmentId],
+  );
+
+  const activeTabConnection = useMemo(
+    () => (activeTabEnvironment?.connectionId ? connections[activeTabEnvironment.connectionId] ?? null : null),
+    [activeTabEnvironment, connections],
+  );
+  activeConnRef.current = activeTabConnection;
+
+  const configuredEnvironments = useMemo(
+    () => environments.filter(e => e.connectionId && connections[e.connectionId]?.host.trim()),
+    [environments, connections],
+  );
+
+  // ── DynamoDB follows the active tab's environment ──────────────────────────
+
+  // Identity only: re-pushing on every keystroke would fight the editor, so
+  // edits are applied explicitly (Apply) while switching tabs is automatic.
+  const activeEnvId = activeTabEnvironment?.id ?? null;
+
+  useEffect(() => {
+    if (!hydrated || !activeEnvId) return;
+    const env = envsRef.current.find(e => e.id === activeEnvId);
+    if (!env) return;
+    if (dynamoRuntimeRef.current.envId === env.id && dynamoRuntimeRef.current.applied) return;
+    void pushDynamoConfig(env);
+  }, [hydrated, activeEnvId, pushDynamoConfig]);
+
   // ── Connection health polling ─────────────────────────────────────────────
 
   // A dropped websocket is otherwise invisible until the next query fails; this
-  // flips the card to "Connection lost" and offers a reconnect.
+  // flips the environment to "Connection lost" and offers a reconnect.
   const connectedIds = useMemo(
     () => Object.values(connections).filter(c => c.state === 'connected').map(c => c.id).join(','),
     [connections],
@@ -700,7 +1057,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             type: 'error',
             title: 'Connection lost',
             detail,
-            action: { label: 'Reconnect', run: () => { void reconnectConnection(id); } },
+            action: { label: 'Reconnect', run: () => { void openConnection(id, true); } },
           });
         } catch {
           // A failed probe alone is not proof the link is down; the next
@@ -711,41 +1068,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const timer = setInterval(poll, HEALTH_POLL_MS);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [connectedIds, updateConn, notify, reconnectConnection]);
-
-  // ── Derived state ─────────────────────────────────────────────────────────
-
-  const activeTab = useMemo(
-    () => queryTabs.find(t => t.id === activeTabId) ?? queryTabs[0] ?? null,
-    [queryTabs, activeTabId],
-  );
-
-  const activeTabConnection = useMemo(
-    () => (activeTab ? resolveConnection(activeTab.id) : null),
-    [activeTab, resolveConnection],
-  );
+  }, [connectedIds, updateConn, notify, openConnection]);
 
   const value: AppContextValue = {
+    environments,
+    configuredEnvironments,
+    selectedEnvironmentId,
+    setSelectedEnvironmentId,
+    addEnvironment,
+    removeEnvironment,
+    renameEnvironment,
+    updateEnvironmentGraph,
+    updateEnvironmentDynamo,
+    applyEnvironmentDynamo,
+    connectEnvironment,
+    reconnectEnvironment,
+    disconnectEnvironment,
+    envConnection,
+    isEnvironmentConfigured,
     connections,
-    activeConnectionId,
-    setActiveConnectionId,
-    addConnection,
-    updateConnectionConfig,
-    connectConnection,
-    reconnectConnection,
-    disconnectConnection,
-    removeConnection,
     loadSchema,
+    reconnectConnection,
     queryTabs,
     activeTabId,
     activeTab,
+    activeTabEnvironment,
     activeTabConnection,
     setActiveTabId,
     addTab,
     closeTab,
     renameTab,
     setTabQuery,
-    setTabConnection,
+    setTabEnvironment,
     setTabResultView,
     executeQuery,
     statusMessage,
@@ -754,17 +1108,73 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     notify,
     dismissNotification,
     clearNotifications,
-    dynamo,
-    setDynamoEnvironment,
-    updateDynamoEnvironment,
-    applyDynamoConfig,
+    dynamoRuntime,
     handleFetchDynamoItem,
+    hydrateVertexProperties,
+    hydrateEdgeProperties,
     graphLabelProperty,
     setGraphLabelProperty,
+    graphLabelModes,
+    setGraphLabelMode,
+    graphEdgeLabelModes,
+    setGraphEdgeLabelMode,
+    resetGraphLabelModes,
+    sidebarSections,
+    setSidebarSection,
+    queryPanelHeight,
+    setQueryPanelHeight,
     hydrated,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+}
+
+// ── Workspace migration ───────────────────────────────────────────────────────
+
+/**
+ * Environments as saved, or built from a pre-environment workspace: the legacy
+ * DynamoDB environment map supplies labels and tables, and each saved
+ * connection is attached to the environment whose label matches its name
+ * (that is how these were named in practice). Anything left over becomes its
+ * own environment, so no configured endpoint is lost in the migration.
+ */
+function restoreEnvironments(
+  state: WorkspaceState,
+  connections: Record<string, ConnectionObject>,
+): EnvironmentObject[] {
+  if (Array.isArray(state.environments) && state.environments.length > 0) {
+    return state.environments.map(e => ({
+      id: e.id,
+      label: e.label,
+      connectionId: e.connectionId && connections[e.connectionId] ? e.connectionId : null,
+      dynamo: { ...DEFAULT_DYNAMO, ...e.dynamo },
+    }));
+  }
+
+  const legacy = state.dynamo?.environments;
+  const envs: EnvironmentObject[] = legacy && Object.keys(legacy).length > 0
+    ? Object.entries(legacy).map(([id, env]) => ({
+        id,
+        label: env.label,
+        connectionId: null,
+        dynamo: { region: env.region, tableName: env.tableName, endpoint: env.endpoint, profile: env.profile },
+      }))
+    : seedEnvironments();
+
+  for (const conn of Object.values(connections)) {
+    const match = envs.find(e => !e.connectionId && e.label.toLowerCase() === conn.name.trim().toLowerCase());
+    if (match) match.connectionId = conn.id;
+    else envs.push({ id: uid('env'), label: conn.name, connectionId: conn.id, dynamo: { ...DEFAULT_DYNAMO } });
+  }
+
+  return envs;
+}
+
+/** A persisted tab's environment, falling back to whoever owns its connection. */
+function resolveTabEnvironment(tab: PersistedTab, envs: EnvironmentObject[]): string | null {
+  if (tab.environmentId && envs.some(e => e.id === tab.environmentId)) return tab.environmentId;
+  if (tab.connectionId) return envs.find(e => e.connectionId === tab.connectionId)?.id ?? null;
+  return null;
 }
 
 export function useApp(): AppContextValue {

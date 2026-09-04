@@ -84,11 +84,39 @@ export function escapeHtml(str) {
 }
 
 /**
+ * Generic "looks like a name" keys, tried after the vertex type's own keys.
+ * `entity_type` sits late on purpose: it usually just repeats the vertex label.
+ */
+const NAME_PROPS = ['name', 'title', 'displayName', 'username', 'email', 'entity_type', 'resource_type', 'block_type'];
+
+/**
+ * Property keys Auto tries, in order, for a vertex of a given type.
+ *
+ * A vertex type normally carries its own subtype property — `block` has
+ * `block_type`, `resource` has `resource_type`, `principal` has `principal` —
+ * and that is what a reader wants to see, so those come first. Deriving them
+ * from the label rather than hard-coding a table means a new vertex type gets
+ * the same treatment without a code change. The generic keys follow.
+ *
+ * @param {string|null|undefined} vertexLabel
+ * @returns {string[]}
+ */
+export function autoLabelCandidates(vertexLabel) {
+  const label = (vertexLabel == null ? '' : String(vertexLabel)).trim();
+  if (!label) return NAME_PROPS;
+  const lower = label.toLowerCase();
+  return [...new Set([
+    `${label}_type`, `${lower}_type`,
+    label, lower,
+    ...NAME_PROPS,
+  ])];
+}
+
+/**
  * Get a display-friendly label for a graph node
  */
 export function getDisplayLabel(vertexLabel, propsMap, id) {
-  const nameProps = ['name', 'title', 'displayName', 'username', 'email', 'entity_type', 'resource_type', 'block_type'];
-  for (const prop of nameProps) {
+  for (const prop of autoLabelCandidates(vertexLabel)) {
     if (propsMap[prop] !== undefined && propsMap[prop] !== null && propsMap[prop] !== '') {
       const val = String(propsMap[prop]);
       if (val.length > 20) return val.substring(0, 20) + '…';
@@ -109,10 +137,37 @@ export function getDisplayLabel(vertexLabel, propsMap, id) {
 export const LABEL_MODE_AUTO  = '__auto__';
 export const LABEL_MODE_LABEL = '__label__';
 export const LABEL_MODE_ID    = '__id__';
+/** Edges only: draw no text at all, for when the types are already obvious. */
+export const LABEL_MODE_NONE  = '__none__';
 
 export function truncateLabel(value, max = 20) {
   const str = String(value);
   return str.length > max ? str.substring(0, max) + '…' : str;
+}
+
+/**
+ * Resolve the text drawn along an edge.
+ *
+ * Auto is the edge's type (`NESTED_IN`), which is what an edge is normally read
+ * by — unlike a vertex, where the type is the least interesting thing about it.
+ * A chosen property that the edge does not carry falls back to the type rather
+ * than to the id, which would be unreadable on a line.
+ *
+ * @param {string} edgeLabel  edge type (e.g. "NESTED_IN")
+ * @param {object} propsMap   flattened property map
+ * @param {string} id         edge id
+ * @param {string} [mode]     LABEL_MODE_* sentinel, or a property key
+ */
+export function computeEdgeLabel(edgeLabel, propsMap, id, mode) {
+  const label = (edgeLabel != null && edgeLabel !== '') ? String(edgeLabel) : '';
+
+  if (!mode || mode === LABEL_MODE_AUTO || mode === LABEL_MODE_LABEL) return truncateLabel(label, 24);
+  if (mode === LABEL_MODE_NONE) return '';
+  if (mode === LABEL_MODE_ID) return truncateLabel(id, 16);
+
+  const value = (propsMap || {})[mode];
+  if (value === undefined || value === null || value === '') return truncateLabel(label, 24);
+  return truncateLabel(value, 24);
 }
 
 /**

@@ -1,19 +1,21 @@
 /**
  * QueryTabs — horizontal tab bar above the query editor.
- * Each tab represents an independent query + results session.
+ * Each tab is an independent query session bound to one environment.
  */
 
 import { useState, useRef, useEffect } from 'react';
 import { useApp } from '../state/AppContext';
-import type { TabObject } from '../state/AppContext';
-import type { ConnectionObject } from '../state/AppContext';
+import type { TabObject, ConnectionState } from '../state/AppContext';
 
 function TabLabel({
-  tab, isActive, connections, onActivate, onClose, onRename,
+  tab, isActive, envLabel, dotState, onActivate, onClose, onRename,
 }: {
   tab: TabObject;
   isActive: boolean;
-  connections: Record<string, ConnectionObject>;
+  /** Environment this tab queries, for the tooltip. */
+  envLabel: string | null;
+  /** Endpoint state of that environment, or null when it has none. */
+  dotState: ConnectionState | null;
   onActivate: () => void;
   onClose: () => void;
   onRename: (name: string) => void;
@@ -23,9 +25,6 @@ function TabLabel({
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
-
-  const connForTab = tab.connectionId ? connections[tab.connectionId] : null;
-  const dotState   = connForTab ? connForTab.state : null;
 
   const commitRename = () => {
     setEditing(false);
@@ -39,7 +38,7 @@ function TabLabel({
       className={`query-tab ${isActive ? 'active' : ''} ${tab.isExecuting ? 'executing' : ''}`}
       onClick={onActivate}
       onDoubleClick={() => { onActivate(); setEditing(true); }}
-      title={editing ? undefined : `${tab.name}${connForTab ? ` — ${connForTab.name}` : ''}`}
+      title={editing ? undefined : `${tab.name}${envLabel ? ` — ${envLabel}` : ' — no environment'}`}
     >
       {dotState && <span className={`tab-conn-dot ${dotState}`} />}
 
@@ -61,6 +60,8 @@ function TabLabel({
         <span className="tab-label-text">{tab.name}</span>
       )}
 
+      {envLabel && !editing && <span className="tab-env-chip">{envLabel}</span>}
+
       {tab.isExecuting && <span className="tab-exec-spinner" />}
 
       <button
@@ -75,22 +76,30 @@ function TabLabel({
 }
 
 export function QueryTabs() {
-  const { queryTabs, activeTabId, setActiveTabId, addTab, closeTab, renameTab, connections } = useApp();
+  const {
+    queryTabs, activeTabId, setActiveTabId, addTab, closeTab, renameTab,
+    environments, connections,
+  } = useApp();
 
   return (
     <div className="query-tabs-bar">
       <div className="query-tabs-scroll">
-        {queryTabs.map(tab => (
-          <TabLabel
-            key={tab.id}
-            tab={tab}
-            isActive={tab.id === activeTabId}
-            connections={connections}
-            onActivate={() => setActiveTabId(tab.id)}
-            onClose={() => closeTab(tab.id)}
-            onRename={name => renameTab(tab.id, name)}
-          />
-        ))}
+        {queryTabs.map(tab => {
+          const env  = environments.find(e => e.id === tab.environmentId) ?? null;
+          const conn = env?.connectionId ? connections[env.connectionId] ?? null : null;
+          return (
+            <TabLabel
+              key={tab.id}
+              tab={tab}
+              isActive={tab.id === activeTabId}
+              envLabel={env?.label ?? null}
+              dotState={conn?.state ?? null}
+              onActivate={() => setActiveTabId(tab.id)}
+              onClose={() => closeTab(tab.id)}
+              onRename={name => renameTab(tab.id, name)}
+            />
+          );
+        })}
       </div>
       <button className="tab-add-btn" title="New query tab" onClick={() => addTab()}>+</button>
     </div>
