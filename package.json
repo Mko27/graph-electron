@@ -2,18 +2,22 @@
   "name": "graph-client-monorepo",
   "version": "2.0.1",
   "private": true,
-  "description": "Multi-provider graph database client — Neptune, Neo4j, JanusGraph, ArangoDB, and more",
+  "description": "Multi-provider graph database client \u2014 Neptune, Neo4j, JanusGraph, ArangoDB, and more",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
+  "engines": {
+    "node": ">=20.11 <21",
+    "npm": ">=10"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p apps/electron/tsconfig.json && tsc --noEmit -p apps/renderer/tsconfig.json",
+    "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/shared/tsconfig.typecheck.json && tsc --noEmit -p packages/db-clients/tsconfig.json && tsc --noEmit -p apps/electron/tsconfig.typecheck.json && tsc --noEmit -p apps/renderer/tsconfig.json",
     "compile": "npm run build -w packages/shared && npm run build -w packages/core && npm run compile -w apps/electron",
     "compile:electron": "tsc -p apps/electron/tsconfig.json",
-    "start": "npm run compile && npm run bundle && electron apps/electron/dist/main.js",
+    "start": "npm run compile && npm run bundle:dev && electron apps/electron/dist/main.js",
     "bundle": "node esbuild.config.mjs",
     "bundle:watch": "node esbuild.config.mjs --watch",
     "dev": "concurrently \"npm run bundle:watch\" \"npm run compile:electron -- --watch\"",
@@ -21,7 +25,8 @@
     "build:mac": "npm run compile && npm run bundle && electron-builder --mac --config electron-builder.config.cjs",
     "build:mac:local": "npm run compile && npm run bundle && electron-builder --mac --config electron-builder.config.cjs",
     "build:win": "npm run compile && npm run bundle && electron-builder --win --config electron-builder.config.cjs",
-    "build:linux": "npm run compile && npm run bundle && electron-builder --linux --config electron-builder.config.cjs"
+    "build:linux": "npm run compile && npm run bundle && electron-builder --linux --config electron-builder.config.cjs",
+    "bundle:dev": "node esbuild.config.mjs --dev"
   },
   "keywords": [
     "neptune",
@@ -37,11 +42,11 @@
   "main": "apps/electron/dist/main.js",
   "devDependencies": {
     "@types/node": "^20.19.41",
-    "@types/react": "^19.2.15",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "concurrently": "^8.2.2",
-    "electron": "^28.1.0",
-    "electron-builder": "^24.9.1",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.16.0",
     "esbuild": "^0.20.0",
     "playwright-core": "^1.60.0",
     "typescript": "^5.9.3",
@@ -52,6 +57,8 @@
     "@aws-sdk/client-dynamodb": "^3.990.0",
     "@aws-sdk/credential-provider-node": "^3.972.9",
     "@aws-sdk/lib-dynamodb": "^3.990.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@smithy/protocol-http": "^5.3.8",
     "@smithy/signature-v4": "^5.3.8",
     "arangojs": "^8.0.0",
@@ -62,5 +69,9 @@
   },
   "optionalDependencies": {
     "nebula-javascript": "^3.0.0"
+  },
+  "overrides": {
+    "fast-xml-parser": "^5.11.1",
+    "ws": "^8.21.3"
   }
 }

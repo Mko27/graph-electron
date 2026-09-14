@@ -7,3 +7,9 @@ build/
 apps/*/dist/
 packages/*/dist/
 dist/
+
+# Packaged installers and unpacked app bundles.
+# electron-builder writes here (see electron-builder.config.cjs). These run to
+# hundreds of MB — individual files exceed GitHub's 100MB hard limit — so they
+# must never be committed. Override the location with GRAPH_CLIENT_OUTPUT_DIR.
+release/

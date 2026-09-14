@@ -20,6 +20,7 @@ import { useApp } from '../state/AppContext';
 import type { EnvironmentObject } from '../state/AppContext';
 import {
   DB_TYPE_LABELS,
+  PROVIDER_MATURITY,
   DIALECT_LABELS,
   DIALECT_COMPATIBILITY,
   DEFAULT_PORTS,
@@ -406,10 +407,32 @@ function EnvironmentEditor({ env }: { env: EnvironmentObject }) {
           <div className="form-group" style={{ flex: 1, minWidth: 0 }}>
             <label>Database</label>
             <select className="conn-select" style={{ width: '100%' }} value={dbType} onChange={e => onDbTypeChange(e.target.value)}>
-              {Object.entries(DB_TYPE_LABELS).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
-              ))}
+              {/*
+                Grouped by how much confidence each provider has earned. All
+                nine used to be listed identically, so there was no way to tell
+                that seven have never been run against a real server.
+              */}
+              <optgroup label="Supported">
+                {Object.entries(DB_TYPE_LABELS)
+                  .filter(([k]) => PROVIDER_MATURITY[k] === 'supported')
+                  .map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+              </optgroup>
+              <optgroup label="Untested — provider exists but is unverified">
+                {Object.entries(DB_TYPE_LABELS)
+                  .filter(([k]) => PROVIDER_MATURITY[k] !== 'supported')
+                  .map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+              </optgroup>
             </select>
+            {PROVIDER_MATURITY[dbType] !== 'supported' && (
+              <div className="maturity-note" role="note">
+                {DB_TYPE_LABELS[dbType]} has not been verified against a live server.
+                Connecting may not work.
+              </div>
+            )}
           </div>
           <div className="form-group" style={{ flex: 1, minWidth: 0 }}>
             <label>Dialect</label>

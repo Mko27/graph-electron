@@ -9,11 +9,12 @@ import type { ConnectionState, SchemaInfo } from '../../types/IGraphProvider';
 import type { QueryResult } from '../../types/IQueryResult';
 import { BaseProvider, type Logger } from '../BaseProvider';
 import { normalizeGremlinResult } from '../shared/gremlinResultNormalizer';
+import { GREMLIN_MIME_TYPE } from '../shared/gremlinSerializer';
 
 export class JanusGraphProvider extends BaseProvider {
   readonly capabilities: ProviderCapabilities = {
-    supportsTransactions: true,
-    supportsSchema: true,
+    supportsTransactions: false, // no transaction implementation in this provider
+    supportsSchema: false, // introspectSchema is a stub — see the method body
     supportsMultiGraph: false,
     supportsStreaming: false,
     supportsGremlin: true,
@@ -46,7 +47,7 @@ export class JanusGraphProvider extends BaseProvider {
     const { Client } = gremlin.driver;
     this.client = new Client(url, {
       traversalSource: this.config.traversalSource ?? 'g',
-      mimeType: 'application/json',
+      mimeType: GREMLIN_MIME_TYPE,
       pingEnabled: true,
     });
     await (this.client as { open(): Promise<void> }).open();
@@ -55,7 +56,9 @@ export class JanusGraphProvider extends BaseProvider {
 
   async disconnect(): Promise<void> {
     if (!this.client) return;
-    (this.client as { close(): void }).close();
+    // close() returns a promise — awaiting it means "disconnected" is true
+    // by the time we say so, instead of while the socket is still closing.
+    await (this.client as { close(): Promise<void> | void }).close();
     this.client = null;
   }
 
@@ -81,7 +84,9 @@ export class JanusGraphProvider extends BaseProvider {
     if (!this.client) throw new Error('Not connected to JanusGraph');
 
     const start = Date.now();
-    return this.withRetry(async () => {
+    this.validateQuery(query, dialect);
+
+    return this.withQueryRetry(query, dialect, async () => {
       const rs = await this.withTimeout(
         (this.client as { submit(q: string, b: Record<string, unknown>): Promise<unknown> })
           .submit(query, parameters),

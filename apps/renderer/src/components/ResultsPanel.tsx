@@ -1,4 +1,37 @@
 /**
+ * A text rendering of the result, for screen readers and find-on-page.
+ *
+ * All three views draw into a canvas, which is opaque to both. This puts the
+ * same data in the accessibility tree (capped, so a huge result does not bloat
+ * the DOM) without changing what sighted users see.
+ */
+function ResultTextAlternative({ data, view }: { data: unknown[]; view: string }) {
+  const ROWS = 100;
+  const rows = data.slice(0, ROWS);
+
+  return (
+    <div className="sr-only">
+      <p>
+        {view} view of {data.length.toLocaleString()} result
+        {data.length === 1 ? '' : 's'}
+        {data.length > ROWS ? `; the first ${ROWS} are listed below` : ''}.
+      </p>
+      <ol>
+        {rows.map((row, i) => (
+          <li key={i}>
+            {typeof row === 'object' && row !== null
+              ? Object.entries(row as Record<string, unknown>)
+                  .map(([k, v]) => `${k}: ${v == null ? '—' : String(v)}`)
+                  .join(', ')
+              : String(row)}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+/**
  * ResultsPanel — tabbed results view (Table / JSON / Graph) for the active query tab.
  */
 
@@ -84,12 +117,18 @@ function TableView({ data }: { data: unknown[] }) {
 
   useEffect(() => { if (rendererRef.current && data) rendererRef.current.setData(data); }, [data]);
 
-  return <div className="canvas-view-container"><canvas ref={canvasRef} /></div>;
+  return (
+    <div className="canvas-view-container">
+      <canvas ref={canvasRef} role="img" aria-label={`Table of ${data.length} results`} />
+      <ResultTextAlternative data={data} view="Table" />
+    </div>
+  );
 }
 
 function JsonView({ data }: { data: unknown[] }) {
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<InstanceType<typeof CanvasJson> | null>(null);
+  const [copyState, setCopyState] = useState<'idle' | 'copying' | 'done' | 'failed'>('idle');
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -99,7 +138,72 @@ function JsonView({ data }: { data: unknown[] }) {
 
   useEffect(() => { if (rendererRef.current && data) rendererRef.current.setData(data); }, [data]);
 
-  return <div className="canvas-view-container"><canvas ref={canvasRef} /></div>;
+  // Reset the confirmation when a new result lands.
+  useEffect(() => { setCopyState('idle'); }, [data]);
+
+  /**
+   * Copy the WHOLE result, not what is on screen: the canvas stops rendering
+   * past 10,000 items / 1,000,000 characters, so a copy of the visible text
+   * would silently be a partial one.
+   */
+  const onCopy = useCallback(async () => {
+    setCopyState('copying');
+    try {
+      // Stringifying a very large result is slow enough to jank the frame;
+      // yield first so the "Copying…" label actually paints.
+      await new Promise(resolve => requestAnimationFrame(() => resolve(null)));
+      const text = JSON.stringify(data, null, 2);
+      setCopyState(await copyText(text) ? 'done' : 'failed');
+    } catch (err) {
+      // Circular references or a string past the engine's limit.
+      console.error('[ResultsPanel] Could not serialise result for copying:', err);
+      setCopyState('failed');
+    }
+  }, [data]);
+
+  useEffect(() => {
+    if (copyState !== 'done' && copyState !== 'failed') return;
+    const timer = setTimeout(() => setCopyState('idle'), 2_000);
+    return () => clearTimeout(timer);
+  }, [copyState]);
+
+  const label =
+    copyState === 'copying' ? 'Copying…' :
+    copyState === 'done'    ? 'Copied' :
+    copyState === 'failed'  ? 'Copy failed' :
+    'Copy JSON';
+
+  return (
+    <div className="canvas-view-container">
+      <div className="json-controls">
+        <button
+          type="button"
+          className={`json-copy-btn ${copyState}`}
+          onClick={() => { void onCopy(); }}
+          disabled={copyState === 'copying'}
+          title={`Copy all ${data.length.toLocaleString()} result${data.length === 1 ? '' : 's'} as JSON to the clipboard`}
+        >
+          {copyState === 'done' ? (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="9" width="11" height="11" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h8" />
+            </svg>
+          )}
+          {label}
+        </button>
+      </div>
+      <canvas ref={canvasRef} role="img" aria-label={`JSON of ${data.length} results`} />
+      <ResultTextAlternative data={data} view="JSON" />
+      {/* Announce the outcome for screen-reader users, who cannot see the label change. */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {copyState === 'done' ? 'Result copied to the clipboard' : copyState === 'failed' ? 'Copy failed' : ''}
+      </span>
+    </div>
+  );
 }
 
 function GraphView({ data }: { data: unknown[] }) {
@@ -120,7 +224,11 @@ function GraphView({ data }: { data: unknown[] }) {
   const [edgeLabelInfo, setEdgeLabelInfo] = useState<EdgeLabelInfo[]>([]);
   const [labelPanelOpen, setLabelPanelOpen] = useState(false);
   const [hydrating, setHydrating] = useState(false);
-  const [graphInfo, setGraphInfo] = useState<{ nodeCount: number; edgeCount: number } | null>(null);
+  const [graphInfo, setGraphInfo] = useState<{
+    nodeCount: number;
+    edgeCount: number;
+    truncation?: { nodesDropped: number; edgesDropped: number; message: string } | null;
+  } | null>(null);
   const [graphWarning, setGraphWarning] = useState<string | null>(null);
 
   // The renderer is created once; the saved label choices seed it so the first
@@ -256,6 +364,18 @@ function GraphView({ data }: { data: unknown[] }) {
           </span>
         </div>
       )}
+      {graphInfo?.truncation && (
+        // The JSON view already says when it truncates; the graph used to drop
+        // nodes past the cap with nothing but a console warning, so the picture
+        // looked complete when it was not.
+        <div
+          className="graph-truncation-note"
+          role="status"
+          title={graphInfo.truncation.message}
+        >
+          ⚠ {graphInfo.truncation.message}
+        </div>
+      )}
       {graphWarning && (
         <div className="graph-warning-note" title={graphWarning}>⚠ {graphWarning}</div>
       )}
@@ -274,7 +394,16 @@ function GraphView({ data }: { data: unknown[] }) {
         />
       )}
 
-      <canvas ref={canvasRef} />
+      <canvas
+        ref={canvasRef}
+        role="img"
+        aria-label={
+          graphInfo
+            ? `Graph of ${graphInfo.nodeCount} nodes and ${graphInfo.edgeCount} edges`
+            : 'Graph view'
+        }
+      />
+      <ResultTextAlternative data={data} view="Graph" />
 
       {graphLoading && (
         <div className="graph-loading-overlay">
@@ -519,6 +648,27 @@ function ResultError({ message, connectionName, onRetry }: {
 
 // ── Empty state ───────────────────────────────────────────────────────────────
 
+/**
+ * A query that ran and matched nothing. This used to fall through to the
+ * first-run welcome screen telling the user to connect a database and run a
+ * query — which they had just done.
+ */
+function NoRowsState({ result }: { result: { duration: number; count: number } }) {
+  return (
+    <div className="empty-state-main" role="status">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
+        <circle cx="11" cy="11" r="7" />
+        <line x1="16.5" y1="16.5" x2="21" y2="21" />
+      </svg>
+      <h3>No rows returned</h3>
+      <p>
+        The query ran successfully in {result.duration}ms and matched nothing.
+        Loosen a filter or check the labels in the schema panel.
+      </p>
+    </div>
+  );
+}
+
 function EmptyState() {
   return (
     <div className="empty-state-main">
@@ -582,7 +732,7 @@ export function ResultsPanel() {
           />
         )}
         {!hasData ? (
-          error ? null : <EmptyState />
+          error ? null : result ? <NoRowsState result={result} /> : <EmptyState />
         ) : (
           <>
             {activeView === 'table' && <TableView data={data} />}

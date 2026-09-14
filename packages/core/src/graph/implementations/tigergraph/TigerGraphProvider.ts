@@ -83,7 +83,9 @@ export class TigerGraphProvider extends BaseProvider {
     if (!this.authToken) throw new Error('Not connected to TigerGraph');
     const start = Date.now();
 
-    return this.withRetry(async () => {
+    this.validateQuery(query, dialect);
+
+    return this.withQueryRetry(query, dialect, async () => {
       // TigerGraph runs installed queries by name via REST++
       // For ad-hoc GSQL, use the GSQL server endpoint
       const graph = this.config.graphName ?? 'MyGraph';

@@ -64,7 +64,15 @@ packages, while `apps/` contains platform-specific entry points.
   - `ipc/contracts.ts` — typed request/response shapes for every channel
   - `constants/index.ts` — default ports, display labels
 
-### `packages/db-clients`
+### `packages/db-clients` — currently unused
+
+Nothing imports this package. It predates the provider system in
+`packages/core/src/graph/implementations/` which fully supersedes it. It is
+kept under `npm run typecheck` so it cannot rot silently (it had accumulated a
+real type error while excluded), but it is not part of the runtime path drawn
+above.
+
+#### Original description
 - **What:** Thin transport-only wrappers over npm database drivers.
 - **Rule:** Only connect/disconnect/submit raw bytes. No retry, no transformation, no schema logic.
 - **Why a separate package:** Keeps driver upgrade surface minimal. Swapping `gremlin@3` for `gremlin@4` only touches this package.
@@ -153,11 +161,10 @@ See [docs/adding-a-dialect.md](docs/adding-a-dialect.md).
 
 ---
 
-## Legacy Code (server/)
+## Removed: the original `server/` implementation
 
-The `server/` directory contains the original JavaScript implementation.
-It is kept for backwards compatibility and will be migrated into `apps/electron/src/`
-and `packages/core/` incrementally. New features should NOT add to `server/`.
+Earlier revisions of this document described a `server/` directory holding the
+original JavaScript implementation, to be migrated into `packages/core/`
+incrementally. That migration is complete and **no `server/` or `client/`
+directory exists** — everything lives in `apps/` and `packages/`.
 
-Legacy IPC channels (`connection:*`, `execute-query`, `get-schema`) remain
-operational but are not typed. Use `graph:*` channels for all new work.

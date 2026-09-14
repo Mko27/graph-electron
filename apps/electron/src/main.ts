@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import * as path from 'path';
 import { ConnectionManager } from '@graph-client/core';
+import { IpcChannels } from '@graph-client/shared';
 import { DynamoService } from './services/DynamoService';
 import { WorkspaceStore } from './services/WorkspaceStore';
 import { AwsProfileService } from './services/AwsProfileService';
@@ -19,9 +20,11 @@ function log(level: string, ...args: unknown[]): void {
     const message = args
       .map(a => (typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)))
       .join(' ');
-    mainWindow.webContents
-      .executeJavaScript(`console.${level}('[main]', ${JSON.stringify(message)})`)
-      .catch(() => {});
+    // Sent as data over IPC rather than built into a line of JavaScript and
+    // executed in the renderer. The old route compiled and ran a script per log
+    // call — a needless round trip, and one escaping slip away from letting
+    // arbitrary error text execute as code.
+    mainWindow.webContents.send(IpcChannels.MAIN_LOG, { level, message });
   }
 }
 
@@ -34,7 +37,9 @@ let workspaceStore: WorkspaceStore;
 
 function createWindow(): void {
   mainWindow = createMainWindow({
-    preloadPath: path.join(__dirname, 'windows', 'preload.js'),
+    // Bundled by esbuild (see esbuild.config.mjs) so it resolves nothing at
+    // runtime — required for the sandboxed preload context.
+    preloadPath: path.join(__dirname, 'preload.js'),
     indexPath: path.join(__dirname, '..', '..', 'renderer', 'src', 'index.html'),
   });
 
@@ -55,6 +60,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   connectionManager.disconnectAll().catch(() => undefined);
+  dynamoService.dispose();
   if (process.platform !== 'darwin') app.quit();
 });
 

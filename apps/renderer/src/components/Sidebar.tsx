@@ -23,6 +23,8 @@ import { useApp } from '../state/AppContext';
 import { DB_TYPE_LABELS, DIALECT_LABELS } from '@graph-client/shared';
 import { CollapsibleSection } from './CollapsibleSection';
 import { EnvironmentsSection } from './EnvironmentsSection';
+import { vertexQueryFor, edgeQueryFor } from '../utils/schemaQueries';
+import { useQueryReplace } from '../hooks/useQueryReplace';
 import { hostPlatform } from '../api/graphApi';
 
 // ── Section ids (persistence keys — renaming resets a section to its default) ─
@@ -117,7 +119,8 @@ const QUICK_QUERIES: Record<string, Array<{ label: string; query: string }>> = {
 // ── Schema explorer ───────────────────────────────────────────────────────────
 
 function SchemaSection() {
-  const { activeTabEnvironment, activeTabConnection, loadSchema, setTabQuery, activeTabId } = useApp();
+  const { activeTabEnvironment, activeTabConnection, loadSchema } = useApp();
+  const { replaceQuery } = useQueryReplace();
 
   const env  = activeTabEnvironment;
   const conn = activeTabConnection;
@@ -128,17 +131,16 @@ function SchemaSection() {
   const vertices  = schema?.vertexLabels ?? [];
   const edges     = schema?.edgeLabels ?? [];
 
-  const isGremlin = conn?.dialect === 'gremlin';
-  const isCypher  = conn?.dialect === 'cypher' || conn?.dialect === 'opencypher';
+  const dialect = conn?.dialect ?? 'gremlin';
 
   const insertVertexQuery = (label: string) => {
-    if (isGremlin) setTabQuery(activeTabId, `g.V().hasLabel('${label}').limit(25)`);
-    else if (isCypher) setTabQuery(activeTabId, `MATCH (n:${label}) RETURN n LIMIT 25`);
+    const query = vertexQueryFor(dialect, label);
+    if (query) replaceQuery(query);
   };
 
   const insertEdgeQuery = (label: string) => {
-    if (isGremlin) setTabQuery(activeTabId, `g.E().hasLabel('${label}').limit(25)`);
-    else if (isCypher) setTabQuery(activeTabId, `MATCH ()-[r:${label}]->() RETURN r LIMIT 25`);
+    const query = edgeQueryFor(dialect, label);
+    if (query) replaceQuery(query);
   };
 
   const summary = schema && (vertices.length > 0 || edges.length > 0)
@@ -185,9 +187,15 @@ function SchemaSection() {
                   <div className="schema-group-title">Vertices ({vertices.length})</div>
                   <div>
                     {vertices.map(v => (
-                      <span key={v.label} className="schema-tag vertex" onClick={() => insertVertexQuery(v.label)}>
+                      <button
+                        key={v.label}
+                        type="button"
+                        className="schema-tag vertex"
+                        onClick={() => insertVertexQuery(v.label)}
+                        title={`Insert a query for ${v.label}`}
+                      >
                         {v.label}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -197,9 +205,15 @@ function SchemaSection() {
                   <div className="schema-group-title">Edges ({edges.length})</div>
                   <div>
                     {edges.map(e => (
-                      <span key={e.label} className="schema-tag edge" onClick={() => insertEdgeQuery(e.label)}>
+                      <button
+                        key={e.label}
+                        type="button"
+                        className="schema-tag edge"
+                        onClick={() => insertEdgeQuery(e.label)}
+                        title={`Insert a query for ${e.label}`}
+                      >
                         {e.label}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -223,7 +237,8 @@ function SchemaSection() {
 // ── Query history ─────────────────────────────────────────────────────────────
 
 function HistorySection() {
-  const { activeTab, setTabQuery, activeTabId } = useApp();
+  const { activeTab } = useApp();
+  const { replaceQuery } = useQueryReplace();
   const history = activeTab?.history ?? [];
 
   return (
@@ -247,7 +262,7 @@ function HistorySection() {
               key={i}
               className={`history-item ${item.success ? 'success' : 'error'}`}
               title={item.query}
-              onClick={() => setTabQuery(activeTabId, item.query)}
+              onClick={() => replaceQuery(item.query)}
             >
               <span className="history-query">{item.query}</span>
               <span className="history-time">{item.timestamp}</span>
@@ -262,7 +277,8 @@ function HistorySection() {
 // ── Quick queries ─────────────────────────────────────────────────────────────
 
 function QuickQuerySection() {
-  const { setTabQuery, activeTabId, activeTabConnection } = useApp();
+  const { activeTabConnection } = useApp();
+  const { replaceQuery } = useQueryReplace();
   const dialect = activeTabConnection?.dialect ?? 'gremlin';
   const queries = QUICK_QUERIES[dialect] ?? QUICK_QUERIES['gremlin'];
 
@@ -276,7 +292,7 @@ function QuickQuerySection() {
     >
       <div className="quick-queries">
         {queries.map((q, i) => (
-          <button key={i} className="quick-query-btn" onClick={() => setTabQuery(activeTabId, q.query)}>
+          <button key={i} className="quick-query-btn" onClick={() => replaceQuery(q.query)}>
             {q.label}
           </button>
         ))}

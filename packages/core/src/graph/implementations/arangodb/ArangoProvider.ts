@@ -22,7 +22,7 @@ export class ArangoProvider extends BaseProvider {
     supportsOpenCypher: false,
     supportsNGQL: false,
     supportsSPARQL: false,
-    supportsGraphQL: true,
+    supportsGraphQL: false, // no GraphQL path is implemented in this provider
     supportsBulkLoad: true,
     supportsPropertyGraph: true,
     supportsRDFGraph: false,
@@ -60,6 +60,10 @@ export class ArangoProvider extends BaseProvider {
   }
 
   async disconnect(): Promise<void> {
+    if (!this.db) return;
+    this.log('info', 'Disconnecting from ArangoDB');
+    // arangojs holds keep-alive agents open; close() releases them.
+    await (this.db as { close(): Promise<void> | void }).close?.();
     this.db = null;
   }
 
@@ -83,17 +87,38 @@ export class ArangoProvider extends BaseProvider {
     if (!this.db) throw new Error('Not connected to ArangoDB');
     const start = Date.now();
 
-    return this.withRetry(async () => {
-      const cursor = await (this.db as {
-        query(q: string, b: Record<string, unknown>): Promise<{ all(): Promise<unknown[]> }>;
-      }).query(query, parameters);
+    this.validateQuery(query, dialect);
+
+    return this.withQueryRetry(query, dialect, async () => {
+      const cursor = await this.withTimeout(
+        (this.db as {
+          query(q: string, b: Record<string, unknown>): Promise<{ all(): Promise<unknown[]> }>;
+        }).query(query, parameters),
+        this.config.queryTimeoutMs ?? 30_000,
+        'ArangoDB query',
+      );
       const data = (await cursor.all()) as T[];
       return { success: true, data, duration: Date.now() - start, count: data.length };
     }, 'ArangoDB query');
   }
 
   async introspectSchema(): Promise<SchemaInfo> {
-    return { vertexLabels: [], edgeLabels: [], propertyKeys: [] };
+    if (!this.db) throw new Error('Not connected to ArangoDB');
+
+    // ArangoDB has no vertex/edge "labels"; collections are the equivalent, and
+    // their type marks which are edges (type 3) versus documents (type 2).
+    const collections = await (this.db as {
+      listCollections(excludeSystem?: boolean): Promise<Array<{ name: string; type: number }>>;
+    }).listCollections(true);
+
+    const vertexLabels = collections
+      .filter((c) => c.type !== 3)
+      .map((c) => ({ label: c.name, properties: [] }));
+    const edgeLabels = collections
+      .filter((c) => c.type === 3)
+      .map((c) => ({ label: c.name, properties: [] }));
+
+    return { vertexLabels, edgeLabels, propertyKeys: [] };
   }
 
   async listGraphs(): Promise<string[]> {

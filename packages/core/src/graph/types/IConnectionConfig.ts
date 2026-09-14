@@ -16,7 +16,8 @@ export type QueryDialect =
   | 'ngql'
   | 'graphql'
   | 'sparql'
-  | 'gsql';
+  | 'gsql'
+  | 'aql';
 
 export interface BaseConnectionConfig {
   id: string;
@@ -60,7 +61,9 @@ export interface Neo4jConnectionConfig extends BaseConnectionConfig {
 
 export interface ArangoDBConnectionConfig extends BaseConnectionConfig {
   dbType: 'arangodb';
-  dialect: 'graphql' | 'gremlin';
+  // AQL only: the provider hands the query to the driver's AQL entry point, so
+  // offering Gremlin or GraphQL here just guaranteed failure.
+  dialect: 'aql';
   username?: string;
   password?: string;
   database?: string;
@@ -132,7 +135,7 @@ export const DIALECT_COMPATIBILITY: Record<DatabaseType, QueryDialect[]> = {
   neptune: ['gremlin', 'opencypher'],
   janusgraph: ['gremlin'],
   neo4j: ['cypher'],
-  arangodb: ['graphql', 'gremlin'],
+  arangodb: ['aql'],
   cosmosdb: ['gremlin'],
   orientdb: ['gremlin', 'graphql'],
   tigergraph: ['gsql' as QueryDialect, 'graphql'],

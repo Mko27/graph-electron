@@ -298,6 +298,14 @@ export interface WorkspaceLoadResponse {
    * connections will need their credentials re-entered before connecting.
    */
   secretsAvailable: boolean;
+  /**
+   * Ids of connections that have a saved credential in the main process.
+   *
+   * The secrets themselves are deliberately NOT sent: the renderer only needs
+   * to know it can connect without prompting. The connect handler fills the
+   * real values in on the way to the driver.
+   */
+  connectionsWithSecrets: string[];
   message?: string;
 }
 

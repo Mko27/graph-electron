@@ -179,19 +179,24 @@ Lists all currently active connections.
 
 ---
 
-## Legacy Channels (`connection:*`)
+## Legacy Channel Names (`connection:*`, `execute-query`, `get-schema`)
 
-These remain for backwards compatibility with Neptune-only connections.
-They are JavaScript (untyped) and will eventually be removed.
+These names exist in `IpcChannels` for backwards compatibility, but **only
+`connection:remove` has a handler**. The rest are unregistered: invoking them
+throws `No handler registered for '<channel>'`. This table used to list all six
+as available.
 
-| Channel | Purpose |
-|---------|---------|
-| `connection:connect` | Connect to Neptune (legacy) |
-| `connection:disconnect` | Disconnect |
-| `connection:remove` | Remove from connection list |
-| `connection:status` | Get connection URL and status |
-| `execute-query` | Execute Gremlin query with result enrichment |
-| `get-schema` | Get vertex/edge labels |
+| Channel | Status |
+|---------|--------|
+| `connection:remove` | **Registered** — disconnects and forgets the stored credential |
+| `connection:connect` | Not registered — use `graph:connect` |
+| `connection:disconnect` | Not registered — use `graph:disconnect` |
+| `connection:status` | Not registered — use `graph:health` |
+| `execute-query` | Not registered — use `graph:query` |
+| `get-schema` | Not registered — use `graph:schema` |
+
+The preload bridge only forwards channels present in `IpcChannels`, so an
+unregistered name fails in the main process rather than being silently dropped.
 
 ---
 

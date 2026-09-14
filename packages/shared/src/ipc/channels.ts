@@ -36,6 +36,9 @@ export const IpcChannels = {
   DYNAMO_GET_CONFIG: 'dynamo-get-config',
   DYNAMO_FETCH_ITEM: 'dynamo-fetch-item',
 
+  // ── main → renderer push channels ──────────────────────────────────────────
+  MAIN_LOG: 'main:log',
+
   // ── AWS helpers ────────────────────────────────────────────────────────────
   AWS_LIST_PROFILES: 'aws:list-profiles',
 

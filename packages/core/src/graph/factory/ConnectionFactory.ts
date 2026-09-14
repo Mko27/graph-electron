@@ -20,6 +20,7 @@ import { CypherDialect } from '../dialects/CypherDialect';
 import { OpenCypherDialect } from '../dialects/OpenCypherDialect';
 import { NGQLDialect } from '../dialects/NGQLDialect';
 import { SPARQLDialect } from '../dialects/SPARQLDialect';
+import { AQLDialect } from '../dialects/AQLDialect';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ProviderCtor = new (id: string, cfg: any, logger?: Logger) => IGraphProvider;
@@ -84,6 +85,7 @@ const DIALECT_CATALOG = [
   new OpenCypherDialect(),
   new NGQLDialect(),
   new SPARQLDialect(),
+  new AQLDialect(),
 ];
 
 let _initialized = false;

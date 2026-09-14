@@ -6,7 +6,12 @@ import type { QueryResult } from '../graph/types/IQueryResult';
 import type { Logger } from '../logging';
 
 interface ManagedConnection {
-  provider: IGraphProvider;
+  /**
+   * Only set for non-pooled connections. A pooled connection has no standalone
+   * provider: every operation borrows one from the pool, because a provider
+   * created outside the pool is never connected.
+   */
+  provider: IGraphProvider | null;
   pool: ConnectionPool | null;
   config: ProviderConnectionConfig;
 }
@@ -40,8 +45,9 @@ export class ConnectionManager {
         { min: config.poolMin ?? 1, max: config.poolMax ?? 5 },
       );
       await pool.initialize();
-      const provider = this.factory.createProvider(config, this.log);
-      this.connections.set(config.id, { provider, pool, config });
+      // No standalone provider: the previous code stored an unconnected one
+      // here, and introspectSchema()/listGraphs() then used it and failed.
+      this.connections.set(config.id, { provider: null, pool, config });
     } else {
       const provider = this.factory.createProvider(config, this.log);
       await provider.connect();
@@ -57,7 +63,7 @@ export class ConnectionManager {
     const conn = this.connections.get(id);
     if (!conn) return;
     if (conn.pool) await conn.pool.close().catch(() => undefined);
-    else await conn.provider.disconnect().catch(() => undefined);
+    else await conn.provider?.disconnect().catch(() => undefined);
     this.connections.delete(id);
     this.log('info', `Connection "${id}" closed`);
   }
@@ -75,31 +81,45 @@ export class ConnectionManager {
     const conn = this._require(id);
     const effectiveDialect = dialect ?? conn.config.dialect;
 
+    return this._withProvider(conn, (provider) =>
+      provider.executeQuery<T>(query, effectiveDialect, parameters),
+    );
+  }
+
+  /**
+   * Run an operation against a connected provider, borrowing one from the pool
+   * when this connection is pooled and always returning it afterwards.
+   */
+  private async _withProvider<T>(
+    conn: ManagedConnection,
+    operation: (provider: IGraphProvider) => Promise<T>,
+  ): Promise<T> {
     if (conn.pool) {
       const provider = await conn.pool.acquire();
       try {
-        return await provider.executeQuery<T>(query, effectiveDialect, parameters);
+        return await operation(provider);
       } finally {
         conn.pool.release(provider);
       }
     }
 
-    return conn.provider.executeQuery<T>(query, effectiveDialect, parameters);
+    if (!conn.provider) throw new Error(`Connection "${conn.config.id}" has no provider`);
+    return operation(conn.provider);
   }
 
   async healthCheck(id: string): Promise<ConnectionState> {
     const conn = this.connections.get(id);
     if (!conn) return { connected: false };
     if (conn.pool) return conn.pool.getState();
-    return conn.provider.healthCheck();
+    return conn.provider ? conn.provider.healthCheck() : { connected: false };
   }
 
   async introspectSchema(id: string): Promise<SchemaInfo> {
-    return this._require(id).provider.introspectSchema();
+    return this._withProvider(this._require(id), (p) => p.introspectSchema());
   }
 
   async listGraphs(id: string): Promise<string[]> {
-    return this._require(id).provider.listGraphs();
+    return this._withProvider(this._require(id), (p) => p.listGraphs());
   }
 
   getConfig(id: string): ProviderConnectionConfig | undefined {

@@ -51,5 +51,7 @@ export {
   DYNAMO_ENVIRONMENT_ORDER,
   DEFAULT_DYNAMO_ENVIRONMENT,
   APP_CHROME,
+  PROVIDER_MATURITY,
+  MATURITY_LABELS,
 } from './constants';
-export type { UICapabilities, DynamoEnvironmentConfig, DynamoEnvironmentId } from './constants';
+export type { UICapabilities, DynamoEnvironmentConfig, DynamoEnvironmentId, ProviderMaturity } from './constants';

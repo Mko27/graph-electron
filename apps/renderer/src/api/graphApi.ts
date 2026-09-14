@@ -30,6 +30,7 @@ declare global {
   interface Window {
     graphClient: {
       invoke: (channel: string, payload?: unknown) => Promise<unknown>;
+      subscribe?: (channel: string, listener: (payload: unknown) => void) => () => void;
       platform?: string;
     };
   }
@@ -42,6 +43,24 @@ function invoke<T>(channel: string, payload?: unknown): Promise<T> {
 /** Host platform, or 'unknown' outside Electron (e.g. a browser-based test run). */
 export const hostPlatform: string = window.graphClient?.platform ?? 'unknown';
 
+/**
+ * Mirror main-process log lines into the devtools console.
+ *
+ * The main process used to achieve this by building a line of JavaScript per
+ * log call and executing it in this window; it now sends the text as data.
+ * Returns an unsubscribe function.
+ */
+export function subscribeToMainLog(): () => void {
+  const subscribe = window.graphClient?.subscribe;
+  if (!subscribe) return () => undefined;
+
+  return subscribe(IpcChannels.MAIN_LOG, (payload) => {
+    const { level, message } = (payload ?? {}) as { level?: string; message?: string };
+    const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'log';
+    console[method]('[main]', message ?? '');
+  });
+}
+
 export const graphApi = {
   // ── Provider metadata ──────────────────────────────────────────────────────
   providers: (): Promise<GraphProvidersResponse> =>
@@ -53,6 +72,13 @@ export const graphApi = {
 
   disconnect: (id: string): Promise<{ success: boolean; message?: string }> =>
     invoke(IpcChannels.GRAPH_DISCONNECT, { id }),
+
+  /**
+   * Disconnect AND forget the stored credential. Used when the user deletes a
+   * connection, so its password does not linger in the keychain blob.
+   */
+  removeConnection: (id: string): Promise<{ success: boolean; message?: string }> =>
+    invoke(IpcChannels.CONNECTION_REMOVE, { id }),
 
   health: (id: string): Promise<GraphHealthResponse> =>
     invoke(IpcChannels.GRAPH_HEALTH, { id }),

@@ -11,6 +11,36 @@ export const DB_TYPE_LABELS: Record<string, string> = {
 };
 
 /**
+ * How much confidence each provider has actually earned.
+ *
+ * The UI offered all nine databases identically, with tailored credential
+ * fields for each and no caveat anywhere, while the project's own README
+ * described seven of them as untested stubs. Users would spend real time
+ * configuring a database that cannot work. Marking them lets the picker say so.
+ *
+ *   supported — exercised against a real server
+ *   untested  — a provider exists, but it has never been run against a server
+ */
+export type ProviderMaturity = 'supported' | 'untested';
+
+export const PROVIDER_MATURITY: Record<string, ProviderMaturity> = {
+  neptune: 'supported',
+  neo4j: 'supported',
+  janusgraph: 'untested',
+  arangodb: 'untested',
+  cosmosdb: 'untested',
+  orientdb: 'untested',
+  tigergraph: 'untested',
+  nebula: 'untested',
+  tinkerpop: 'untested',
+};
+
+export const MATURITY_LABELS: Record<ProviderMaturity, string> = {
+  supported: '',
+  untested: 'untested',
+};
+
+/**
  * Which query dialects each database type supports.
  * Duplicated from @graph-client/core so the renderer can import it without
  * pulling in the full core package (which has Electron-only dependencies).
@@ -19,7 +49,7 @@ export const DIALECT_COMPATIBILITY: Record<string, string[]> = {
   neptune:     ['gremlin', 'opencypher'],
   janusgraph:  ['gremlin'],
   neo4j:       ['cypher'],
-  arangodb:    ['graphql', 'gremlin'],
+  arangodb:    ['aql'],
   cosmosdb:    ['gremlin'],
   orientdb:    ['gremlin', 'graphql'],
   tigergraph:  ['gsql', 'graphql'],
@@ -30,6 +60,13 @@ export const DIALECT_COMPATIBILITY: Record<string, string[]> = {
 /**
  * Capability flags for each provider — used by the UI to gate features
  * (schema explorer, transaction panel, etc.) without an extra IPC round-trip.
+ *
+ * This table MUST agree with each provider's own `capabilities` in
+ * @graph-client/core. It is duplicated rather than imported because the
+ * renderer cannot pull in core (which has Electron-only dependencies), so
+ * `capabilities.test.ts` diffs the two at runtime to stop them drifting —
+ * they previously disagreed on 6 flags, which silently hid the schema panel
+ * for databases that support it.
  */
 export interface UICapabilities {
   supportsSchema: boolean;
@@ -40,13 +77,13 @@ export interface UICapabilities {
 
 export const PROVIDER_CAPABILITIES: Record<string, UICapabilities> = {
   neptune:    { supportsSchema: true,  supportsTransactions: false, supportsMultiGraph: false, supportsStreaming: false },
-  neo4j:      { supportsSchema: true,  supportsTransactions: true,  supportsMultiGraph: true,  supportsStreaming: true  },
-  janusgraph: { supportsSchema: true,  supportsTransactions: false, supportsMultiGraph: false, supportsStreaming: false },
-  arangodb:   { supportsSchema: false, supportsTransactions: true,  supportsMultiGraph: true,  supportsStreaming: false },
+  neo4j:      { supportsSchema: true,  supportsTransactions: true,  supportsMultiGraph: true,  supportsStreaming: false },
+  janusgraph: { supportsSchema: false, supportsTransactions: false, supportsMultiGraph: false, supportsStreaming: false },
+  arangodb:   { supportsSchema: true,  supportsTransactions: true,  supportsMultiGraph: true,  supportsStreaming: false },
   cosmosdb:   { supportsSchema: false, supportsTransactions: false, supportsMultiGraph: false, supportsStreaming: false },
   orientdb:   { supportsSchema: false, supportsTransactions: true,  supportsMultiGraph: true,  supportsStreaming: false },
   tigergraph: { supportsSchema: true,  supportsTransactions: false, supportsMultiGraph: true,  supportsStreaming: false },
-  nebula:     { supportsSchema: false, supportsTransactions: false, supportsMultiGraph: true,  supportsStreaming: false },
+  nebula:     { supportsSchema: true,  supportsTransactions: false, supportsMultiGraph: true,  supportsStreaming: false },
   tinkerpop:  { supportsSchema: false, supportsTransactions: false, supportsMultiGraph: false, supportsStreaming: false },
 };
 
@@ -58,6 +95,7 @@ export const DIALECT_LABELS: Record<string, string> = {
   graphql: 'GraphQL',
   sparql: 'SPARQL',
   gsql: 'GSQL',
+  aql: 'AQL',
 };
 
 export const DEFAULT_PORTS: Record<string, number> = {

@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, shell } from 'electron';
 import { APP_CHROME } from '@graph-client/shared';
 
 export interface WindowConfig {
@@ -6,6 +6,64 @@ export interface WindowConfig {
   height?: number;
   preloadPath: string;
   indexPath: string;
+}
+
+/**
+ * Hosts the app may open in the user's browser. Everything else is refused
+ * rather than opened, so a stray or injected link cannot reach an arbitrary
+ * site — and never inside the app window.
+ */
+const ALLOWED_EXTERNAL_HOSTS = new Set([
+  'github.com',
+  'docs.aws.amazon.com',
+  'neo4j.com',
+  'tinkerpop.apache.org',
+]);
+
+function isAllowedExternal(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'https:') return false;
+    return ALLOWED_EXTERNAL_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Confine the window to the app's own bundled page.
+ *
+ * Without these the window will follow any navigation it is given and open
+ * arbitrary popups — the standard hardening step for an Electron app, and it
+ * was simply absent. Nothing in the current UI triggers a navigation, so this
+ * costs nothing and closes the hole.
+ */
+function applyNavigationGuards(win: BrowserWindow, indexPath: string): void {
+  const isOwnPage = (rawUrl: string): boolean => {
+    try {
+      const url = new URL(rawUrl);
+      if (url.protocol !== 'file:') return false;
+      return decodeURIComponent(url.pathname) === indexPath;
+    } catch {
+      return false;
+    }
+  };
+
+  win.webContents.on('will-navigate', (event, url) => {
+    if (isOwnPage(url)) return;
+    event.preventDefault();
+    if (isAllowedExternal(url)) void shell.openExternal(url);
+  });
+
+  // Covers <a href> with a target, window.open, and anything else asking for a
+  // new window: never open one, hand approved links to the OS browser instead.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedExternal(url)) void shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  // A renderer that somehow navigates anyway is a bug worth surfacing.
+  win.webContents.on('will-attach-webview', (event) => event.preventDefault());
 }
 
 export function createMainWindow(config: WindowConfig): BrowserWindow {
@@ -37,9 +95,16 @@ export function createMainWindow(config: WindowConfig): BrowserWindow {
       preload: config.preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // The preload only uses contextBridge/ipcRenderer, both available in a
+      // sandboxed preload, so the extra containment costs nothing here.
+      sandbox: true,
+      webSecurity: true,
+      // No part of the UI embeds another page.
+      webviewTag: false,
     },
   });
+
+  applyNavigationGuards(win, config.indexPath);
 
   win.loadFile(config.indexPath);
   return win;

@@ -44,6 +44,9 @@ const DIALECT_PLACEHOLDERS: Record<string, string> = {
   sparql:     'SELECT * WHERE { ?s ?p ?o } LIMIT 10',
 };
 
+/** Two spaces, matching the editor's existing indent width. */
+const INDENT = '  ';
+
 export function QueryPanel() {
   const {
     activeTab,
@@ -55,6 +58,7 @@ export function QueryPanel() {
     connectEnvironment,
     reconnectEnvironment,
     executeQuery,
+    cancelQuery,
     setTabQuery,
     queryPanelHeight,
     setQueryPanelHeight,
@@ -131,6 +135,10 @@ export function QueryPanel() {
     if (activeTabId) executeQuery(activeTabId);
   }, [activeTabId, executeQuery]);
 
+  const onCancel = useCallback(() => {
+    if (activeTabId) cancelQuery(activeTabId);
+  }, [activeTabId, cancelQuery]);
+
   const onClear = useCallback(() => {
     if (activeTabId) setTabQuery(activeTabId, '');
   }, [activeTabId, setTabQuery]);
@@ -141,13 +149,47 @@ export function QueryPanel() {
       onExecute();
     }
     if (e.key === 'Tab') {
-      e.preventDefault();
       const el = e.currentTarget;
       const start = el.selectionStart;
       const end   = el.selectionEnd;
-      const next  = query.substring(0, start) + '  ' + query.substring(end);
-      setTabQuery(activeTabId, next);
-      requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + 2; });
+
+      // With nothing selected, Tab is a plain two-space indent. Keyboard users
+      // still need a way out of the editor, so Escape-then-Tab moves focus:
+      // Tab is only swallowed when it is doing something useful here.
+      if (start === end && !e.shiftKey) {
+        e.preventDefault();
+        const next = query.substring(0, start) + INDENT + query.substring(end);
+        setTabQuery(activeTabId, next);
+        requestAnimationFrame(() => {
+          el.selectionStart = el.selectionEnd = start + INDENT.length;
+        });
+        return;
+      }
+
+      // A selection means indent/outdent every line it touches, rather than
+      // replacing the whole selection with two spaces.
+      e.preventDefault();
+      const lineStart = query.lastIndexOf('\n', start - 1) + 1;
+      const lineEndIdx = query.indexOf('\n', end);
+      const lineEnd = lineEndIdx === -1 ? query.length : lineEndIdx;
+
+      const block = query.slice(lineStart, lineEnd);
+      const lines = block.split('\n');
+
+      const shifted = e.shiftKey
+        ? lines.map(line =>
+            line.startsWith(INDENT) ? line.slice(INDENT.length) : line.replace(/^[ \t]/, ''),
+          )
+        : lines.map(line => INDENT + line);
+
+      const delta = shifted[0].length - lines[0].length;
+      const totalDelta = shifted.join('\n').length - block.length;
+
+      setTabQuery(activeTabId, query.slice(0, lineStart) + shifted.join('\n') + query.slice(lineEnd));
+      requestAnimationFrame(() => {
+        el.selectionStart = Math.max(lineStart, start + delta);
+        el.selectionEnd = Math.max(lineStart, end + totalDelta);
+      });
     }
   }, [onExecute, query, activeTabId, setTabQuery]);
 
@@ -290,23 +332,36 @@ export function QueryPanel() {
             </svg>
             Clear
           </button>
-          <button
-            className="btn btn-primary"
-            title={
-              !canRun
-                ? 'Pick an environment with an endpoint first'
-                : isConnected
-                  ? 'Execute (Ctrl+Enter)'
-                  : 'Connects this environment, then runs (Ctrl+Enter)'
-            }
-            onClick={onExecute}
-            disabled={isExecuting || !canRun}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polygon points="5 3 19 12 5 21 5 3"/>
-            </svg>
-            {isExecuting ? 'Executing…' : canRun && !isConnected ? 'Connect & Execute' : 'Execute'}
-          </button>
+          {isExecuting ? (
+            <button
+              className="btn btn-danger"
+              title="Stop waiting for this query (the database may still finish it)"
+              onClick={onCancel}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="6" y="6" width="12" height="12" rx="1.5" />
+              </svg>
+              Stop
+            </button>
+          ) : (
+            <button
+              className="btn btn-primary"
+              title={
+                !canRun
+                  ? 'Pick an environment with an endpoint first'
+                  : isConnected
+                    ? 'Execute (Ctrl+Enter)'
+                    : 'Connects this environment, then runs (Ctrl+Enter)'
+              }
+              onClick={onExecute}
+              disabled={!canRun}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+              {canRun && !isConnected ? 'Connect & Execute' : 'Execute'}
+            </button>
+          )}
         </div>
       </div>
 

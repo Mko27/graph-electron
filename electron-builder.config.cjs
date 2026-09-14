@@ -2,7 +2,11 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-const documentsDir = path.join(os.homedir(), 'Documents');
+// Release artifacts go in the project's own release/ directory (gitignored).
+// They used to land in the user's ~/Documents, which cannot be gitignored,
+// differs per machine and is meaningless on a build server. Override with
+// GRAPH_CLIENT_OUTPUT_DIR if you need them elsewhere.
+const outputDir = process.env.GRAPH_CLIENT_OUTPUT_DIR || path.join(__dirname, 'release');
 const hasIcon = fs.existsSync(path.join(__dirname, 'assets', 'icon.png'));
 
 module.exports = {
@@ -12,14 +16,66 @@ module.exports = {
   appId: 'com.graphclient.app',
   productName: 'Graph Client',
   directories: {
-    output: documentsDir,
+    output: outputDir,
+  },
+  // Electron fuses — flipped in the binary at package time to shrink the
+  // attack surface of the shipped app.
+  electronFuses: {
+    // Refuse to act as a plain Node process (ELECTRON_RUN_AS_NODE), which would
+    // otherwise let the shipped binary run arbitrary scripts.
+    runAsNode: false,
+    enableNodeOptionsEnvironmentVariable: false,
+    enableNodeCliInspectArguments: false,
+    // Encrypt cookies at rest with an OS-backed key.
+    enableCookieEncryption: true,
+    // Validate the asar against a hash embedded in the app, and never load app
+    // code from an unpacked directory instead.
+    enableEmbeddedAsarIntegrityValidation: true,
+    onlyLoadAppFromAsar: true,
+  },
+  /**
+   * Re-sign after the fuses are flipped.
+   *
+   * Flipping a fuse rewrites bytes in the Mach-O binary, which invalidates the
+   * ad-hoc signature Electron ships with. On Apple Silicon the kernel refuses
+   * to run a binary whose signature does not match and SIGKILLs it on launch,
+   * so without this the fused app dies instantly (exit 137).
+   *
+   * Must run in afterSign, not afterPack: afterPack fires BEFORE the fuses are
+   * flipped, so a signature applied there is invalidated moments later.
+   *
+   * When a real Developer ID identity is configured, electron-builder's own
+   * signing supersedes this — it only matters for unsigned local/QA builds.
+   */
+  afterSign: async (context) => {
+    if (context.electronPlatformName !== 'darwin') return;
+
+    const { execFileSync } = require('child_process');
+    const appPath = path.join(
+      context.appOutDir,
+      `${context.packager.appInfo.productFilename}.app`,
+    );
+
+    try {
+      execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], {
+        stdio: 'pipe',
+      });
+      console.log(`  • ad-hoc re-signed after fuse flip  app=${appPath}`);
+    } catch (err) {
+      console.warn(
+        `  ⚠ ad-hoc re-sign failed — the fused app may not launch: ${err.message}`,
+      );
+    }
   },
   files: [
     'apps/electron/dist/**/*',
     'apps/renderer/src/index.html',
     'apps/renderer/src/styles.css',
+    'apps/renderer/src/fonts.css',
+    'apps/renderer/src/fonts/**/*',
     'apps/renderer/dist/bundle.js',
-    'apps/renderer/dist/bundle.js.map',
+    // bundle.js.map is deliberately NOT shipped: it embeds the full original
+    // source of the renderer in the installed app.
     'packages/core/dist/**/*',
     'packages/shared/dist/**/*',
     {
@@ -38,6 +94,17 @@ module.exports = {
     target: 'dmg',
     ...(hasIcon && { icon: 'assets/icon.png' }),
     category: 'public.app-category.developer-tools',
+    // Gatekeeper rejects an unsigned build as "damaged" on any machine that did
+    // not produce it. These switch on as soon as signing credentials exist in
+    // the environment (CSC_LINK / CSC_KEY_PASSWORD, plus APPLE_ID +
+    // APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID for notarisation); without
+    // them the build stays unsigned and local-only, as before.
+    hardenedRuntime: Boolean(process.env.CSC_LINK),
+    gatekeeperAssess: false,
+    ...(process.env.CSC_LINK
+      ? { entitlements: 'build/entitlements.mac.plist', entitlementsInherit: 'build/entitlements.mac.plist' }
+      : {}),
+    notarize: Boolean(process.env.APPLE_TEAM_ID) && { teamId: process.env.APPLE_TEAM_ID },
   },
   dmg: {
     contents: [
@@ -70,7 +137,10 @@ module.exports = {
     uninstallDisplayName: 'Graph Client ${version}',
     // Remove the app's own data (including the saved workspace) on uninstall,
     // so uninstalling actually leaves the machine clean.
-    deleteAppDataOnUninstall: true,
+    // Leaving saved connections, tabs and history in place: uninstalling to
+    // reinstall (or to upgrade) should not destroy the user's workspace. The
+    // data lives in %APPDATA%/graph-client and can be removed by hand.
+    deleteAppDataOnUninstall: false,
     runAfterFinish: true,
     // Uninstall the previous version before laying down the new one, instead of
     // stacking a second registry entry per release.
